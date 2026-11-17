@@ -2,6 +2,7 @@ import json
 from contextlib import nullcontext
 from email.message import Message
 from hashlib import md5
+from http.client import HTTPException, IncompleteRead, RemoteDisconnected
 from unittest.mock import MagicMock, Mock, call
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs
@@ -234,7 +235,14 @@ def test_deleted_tasks_are_omitted_and_recurring_is_preserved():
 
 @pytest.mark.parametrize("mutation", [False, True])
 @pytest.mark.parametrize(
-    "failure", [URLError("offline"), OSError("closed"), TimeoutError()]
+    "failure",
+    [
+        URLError("offline"),
+        OSError("closed"),
+        TimeoutError(),
+        HTTPException("protocol failure"),
+        RemoteDisconnected("closed"),
+    ],
 )
 def test_transport_failure_is_not_retried_and_reports_uncertainty(
     backend, mutation, failure
@@ -251,6 +259,24 @@ def test_transport_failure_is_not_retried_and_reports_uncertainty(
     assert error.value.details is None
     assert backend.write_attempted is mutation
     backend.opener.open.assert_called_once()
+
+
+@pytest.mark.parametrize("mutation", [False, True])
+def test_incomplete_response_is_not_retried_and_reports_uncertainty(backend, mutation):
+    response = respond(backend, b"")
+    response.read.side_effect = IncompleteRead(b"partial", 100)
+    with pytest.raises(MooError) as error:
+        backend.run(lambda: backend.call("tasks.addTags", mutation=mutation))
+    assert_error(error, "transport_error", 6)
+    assert error.value.message == (
+        UNCERTAIN_WRITE_MESSAGE
+        if mutation
+        else "RTM request failed or timed out; no retry performed."
+    )
+    assert error.value.details is None
+    assert backend.write_attempted is mutation
+    backend.opener.open.assert_called_once()
+    response.read.assert_called_once_with(8_000_001)
 
 
 @pytest.mark.parametrize(

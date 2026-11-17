@@ -5,6 +5,7 @@ import signal
 from contextlib import contextmanager
 from dataclasses import asdict
 from hashlib import md5
+from http.client import HTTPException
 from time import monotonic
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -170,7 +171,7 @@ class RTMBackend:
             raise self.failure(
                 code, "RTM HTTP request failed.", 7, {"http_status": error.code}
             ) from None
-        except (URLError, OSError, TimeoutError):
+        except (HTTPException, URLError, OSError, TimeoutError):
             raise self.failure(
                 "transport_error",
                 "RTM request failed or timed out; no retry performed.",
