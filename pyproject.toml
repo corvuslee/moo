@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moo-rtm"
+version = "0.1.0"
+description = "A one-shot Remember The Milk CLI for coding agents"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+moo = "moo.cli:main"
+
+[dependency-groups]
+dev = ["pytest==9.0.3", "ruff==0.17.5", "ty==0.0.105"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/moo"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ty.environment]
+python-version = "3.11"
