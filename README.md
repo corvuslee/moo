@@ -67,3 +67,5 @@ moo tasks show 321:456:789
 # Display readable text instead of JSON
 moo --human tasks list --list-id 123
 ```
+
+For scripts and integrations, see the [output contract](docs/output-contract.md).
