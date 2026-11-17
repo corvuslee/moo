@@ -44,10 +44,12 @@ restored it during verification:
 uv sync --locked --python /usr/bin/python3 --reinstall-package moo
 ```
 
-The current `uv run ruff check .` reports `BLE001` for the deliberate catch-all in
-`src/moo/cli.py`, which implements the safe internal-error output boundary. This
-pre-existing diagnostic is not caused by documentation changes; do not remove
-that boundary just to satisfy lint.
+The deliberate catch-all in `src/moo/cli.py` implements the safe internal-error
+output boundary and has a line-scoped `BLE001` suppression. Preserve that boundary
+and keep the suppression limited to that handler.
+
+`.github/workflows/ci.yml` runs the checks above for pushes and pull requests to
+`main`, using Python 3.11 through 3.14 on Ubuntu and the pinned uv version.
 
 For focused tests, use the existing test modules, for example:
 

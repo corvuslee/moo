@@ -152,7 +152,7 @@ def run(
             },
         )
         return 130
-    except Exception:
+    except Exception:  # noqa: BLE001
         emit(
             {
                 "error": {
