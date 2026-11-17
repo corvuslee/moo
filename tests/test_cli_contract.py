@@ -133,15 +133,17 @@ def test_invalid_arguments_never_construct_backend(arguments, capsys):
 
 
 @pytest.mark.parametrize("code", [3, 4, 5, 6, 7])
-def test_error_contract(code, capsys):
+@pytest.mark.parametrize("details", [None, {}, {"write_may_have_applied": False}])
+def test_error_contract(code, details, capsys):
     def fail(args):
-        raise MooError("failure", "Safe message", code)
+        raise MooError("failure", "Safe message", code, details)
 
     assert run(["lists", "list"], fail) == code
     body = json.loads(capsys.readouterr().out)
-    assert body == {
-        "error": {"code": "failure", "message": "Safe message", "details": {}},
-    }
+    expected = {"code": "failure", "message": "Safe message"}
+    if details:
+        expected["details"] = details
+    assert body == {"error": expected}
 
 
 @pytest.mark.parametrize(
@@ -163,7 +165,7 @@ def test_safe_error_results(failure, exit_code, code, message, capsys):
 
     assert run(["lists", "list"], fail) == exit_code
     assert json.loads(capsys.readouterr().out) == {
-        "error": {"code": code, "message": message, "details": {}}
+        "error": {"code": code, "message": message}
     }
 
 

@@ -135,7 +135,7 @@ def run(
                 "error": {
                     "code": error.code,
                     "message": error.message,
-                    "details": error.details or {},
+                    **({"details": error.details} if error.details else {}),
                 },
             },
         )
@@ -146,7 +146,6 @@ def run(
                 "error": {
                     "code": "cancelled",
                     "message": "Operation cancelled.",
-                    "details": {},
                 },
             },
         )
@@ -157,7 +156,6 @@ def run(
                 "error": {
                     "code": "internal_error",
                     "message": "Unexpected internal failure.",
-                    "details": {},
                 },
             },
         )

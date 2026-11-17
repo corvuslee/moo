@@ -27,7 +27,7 @@ Success returns the command-specific object directly, with exit code 0:
 Failure returns an `error` object, with a nonzero exit code:
 
 ```json
-{"error": {"code": "not_found", "message": "List not found.", "details": {}}}
+{"error": {"code": "not_found", "message": "List not found."}}
 ```
 
 - There is no `schema_version`, `ok`, or `data` wrapper.
@@ -36,7 +36,9 @@ Failure returns an `error` object, with a nonzero exit code:
 - Success fields are command-specific, described below.
 - `error.code` is a machine-readable string; branch on it rather than the message.
 - `error.message` is explanatory text, not a stable parsing interface.
-- `error.details` is always an object, possibly empty.
+- `error.details` is included only when it is a nonempty object. Empty or absent
+  details are omitted; meaningful values such as `write_may_have_applied: false`
+  are preserved.
 
 Consumers should tolerate unknown object fields. This document does not establish
 a separate release compatibility policy.
