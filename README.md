@@ -3,9 +3,10 @@
 A command-line interface for Remember The Milk. Find tasks, read and add notes,
 manage tags, and move tasks between lists.
 
-> **Permissions:** During setup, moo requests Remember The Milk's account-wide
-> “delete” permission because RTM requires it to move tasks between lists.
-> The CLI has no delete command.
+> **Permissions:** RTM has three account-wide permission levels: `read`, `write`,
+> and `delete`. Moving tasks requires the `delete` level, so moo requests it during
+> setup; `write` is insufficient. This level includes read/write and deletion access,
+> although moo has no delete command.
 
 ## Installation
 
