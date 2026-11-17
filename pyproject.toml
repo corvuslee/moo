@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moo"
+version = "0.1.0"
+description = "A command-line interface for Remember The Milk."
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+moo = "moo.cli:main"
+
+[dependency-groups]
+dev = ["pytest==9.0.3", "ruff==0.17.5", "ty==0.0.105"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/moo"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ty.environment]
+python-version = "3.11"
