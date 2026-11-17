@@ -12,6 +12,11 @@ from moo.backends.rtm import RTMBackend
 from moo.contracts import Backend, MooError, TaskRef
 
 
+class ReferenceHelpFormatter(argparse.RawTextHelpFormatter):
+    def __init__(self, prog: str) -> None:
+        super().__init__(prog, width=sys.maxsize)
+
+
 class HelpAll(argparse.Action):
     def __call__(
         self,
@@ -58,15 +63,9 @@ def tag_value(value: str) -> str:
 def parser() -> Parser:
     root = Parser(
         prog="moo",
+        formatter_class=ReferenceHelpFormatter,
         description="A command-line interface for Remember The Milk.",
-        epilog=(
-            "Agent workflow: lists list -> tasks list -> tasks show REF. "
-            "Commands return one JSON object on stdout; help and version are plain text. "
-            "Only explicit auth may prompt. Operations have a 10-second deadline and "
-            "never retry automatically. If a write is uncertain, inspect current state "
-            "before retrying. Use <subcommand> --help for focused help or --help-all "
-            "for the complete command reference."
-        ),
+        epilog="Use <subcommand> --help for command help or --help-all for the complete reference.",
     )
     root.add_argument(
         "--help-all",
@@ -78,6 +77,7 @@ def parser() -> Parser:
     commands = root.add_subparsers(dest="command", required=True, title="commands")
 
     def command(parent, name, description, **kwargs):
+        kwargs["formatter_class"] = ReferenceHelpFormatter
         if parent is commands:
             child = parent.add_parser(
                 name,

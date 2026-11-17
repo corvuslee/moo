@@ -250,11 +250,10 @@ def test_help_all_includes_every_command_once(capsys, monkeypatch):
         "--tag",
         "--to-list-id",
         "LIST:SERIES:TASK",
-        "JSON",
-        "never retry automatically",
-        "inspect current state",
     ]:
         assert text in " ".join(output.split())
+    assert "Agent workflow" not in output
+    assert "inspect current state" not in output
 
 
 @pytest.mark.parametrize("arguments", [["tasks"], ["tasks", "tags", "remove"]])
@@ -301,6 +300,27 @@ def test_focused_help_does_not_expand_children(arguments, capsys):
     output = capsys.readouterr().out
     assert "--to-list-id" not in output
     assert "===" not in output
+
+
+@pytest.mark.parametrize("columns", ["40", "120"])
+def test_help_preserves_reference_lines(columns, monkeypatch, capsys):
+    monkeypatch.setenv("COLUMNS", columns)
+    with pytest.raises(SystemExit):
+        run(["--help-all"])
+    lines = capsys.readouterr().out.splitlines()
+    assert (
+        'Return lists with string IDs, names, smart and archived flags as {"lists": [...]}.'
+        in lines
+    )
+    assert (
+        "usage: moo tasks list [-h] [--list-id LIST_ID] [--tag TAG] [--include-completed]"
+        in lines
+    )
+    assert any(
+        line.strip().startswith("ref")
+        and line.endswith("each component containing ASCII digits")
+        for line in lines
+    )
 
 
 def test_unicode_is_escaped(capsys):
