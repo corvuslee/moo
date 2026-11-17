@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
-from typing import Any, Never
+from typing import Never
 
 from moo.auth import authenticate, load_credentials, logout
 from moo.backends.rtm import RTMBackend
@@ -32,28 +31,9 @@ def tag_value(value: str) -> str:
     return value
 
 
-def timeout_value(value: str) -> float:
-    try:
-        timeout = float(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError("Timeout must be a number") from None
-    if not math.isfinite(timeout) or not 0 < timeout <= 300:
-        raise argparse.ArgumentTypeError(
-            "Timeout must be greater than zero and at most 300 seconds"
-        )
-    return timeout
-
-
 def parser() -> Parser:
     root = Parser(prog="moo", description="One-shot Remember The Milk CLI for agents")
     root.add_argument("--version", action="version", version="moo 0.1.0")
-    root.add_argument("--human", action="store_true", help="Render results as readable text")
-    root.add_argument(
-        "--timeout",
-        type=timeout_value,
-        default=30.0,
-        help="Overall operation deadline in seconds (default: 30, maximum: 300)",
-    )
     commands = root.add_subparsers(dest="command", required=True)
     auth = commands.add_parser("auth", help="Authorize once using your browser")
     auth.add_argument("--no-browser", action="store_true")
@@ -90,9 +70,7 @@ def parser() -> Parser:
 
 def make_backend(args: argparse.Namespace) -> Backend:
     credentials = load_credentials(require_token=args.command != "auth")
-    return RTMBackend(
-        credentials.api_key, credentials.shared_secret, credentials.token, args.timeout
-    )
+    return RTMBackend(credentials.api_key, credentials.shared_secret, credentials.token)
 
 
 def dispatch(args: argparse.Namespace, backend: Backend) -> dict[str, object]:
@@ -111,29 +89,23 @@ def dispatch(args: argparse.Namespace, backend: Backend) -> dict[str, object]:
         return {
             "tasks": [
                 asdict(value)
-                for value in backend.tasks(args.list_id, args.tag, args.include_completed)
+                for value in backend.tasks(
+                    args.list_id, args.tag, args.include_completed
+                )
             ]
         }
     ref = TaskRef.parse(args.ref)
     if args.action == "show":
         return {"task": asdict(backend.show(ref))}
     if args.action == "notes":
-        if not args.title.strip() or not args.text.strip():
-            raise MooError("invalid_arguments", "Note title and text must be nonempty.", 2)
         return backend.add_note(ref, args.title, args.text)
     if args.action == "tags":
         return backend.change_tags(ref, args.tag, remove=args.tag_action == "remove")
     return backend.move(ref, args.to_list_id)
 
 
-def emit(payload: dict[str, Any], human: bool) -> None:
-    if human:
-        if not payload["ok"]:
-            print(f"{payload['error']['code']}: {payload['error']['message']}")
-        else:
-            print(json.dumps(payload["data"], indent=2, ensure_ascii=True))
-    else:
-        print(json.dumps(payload, ensure_ascii=True))
+def emit(payload: dict[str, object]) -> None:
+    print(json.dumps(payload, ensure_ascii=True))
 
 
 def run(
@@ -141,7 +113,6 @@ def run(
     backend_factory: Callable[[argparse.Namespace], Backend] = make_backend,
 ) -> int:
     arguments = list(argv) if argv is not None else sys.argv[1:]
-    human = "--human" in arguments
     try:
         args = parser().parse_args(arguments)
         if args.command == "auth" and args.auth_action == "logout":
@@ -149,48 +120,46 @@ def run(
         else:
             if hasattr(args, "ref"):
                 TaskRef.parse(args.ref)
-            if getattr(args, "action", None) == "notes":
-                if not args.title.strip() or not args.text.strip():
-                    raise MooError("invalid_arguments", "Note title and text must be nonempty.", 2)
+            if getattr(args, "action", None) == "notes" and (
+                not args.title.strip() or not args.text.strip()
+            ):
+                raise MooError(
+                    "invalid_arguments", "Note title and text must be nonempty.", 2
+                )
             data = dispatch(args, backend_factory(args))
-        emit({"schema_version": 1, "ok": True, "data": data}, human)
+        emit(data)
         return 0
     except MooError as error:
         emit(
             {
-                "schema_version": 1,
-                "ok": False,
                 "error": {
                     "code": error.code,
                     "message": error.message,
                     "details": error.details or {},
                 },
             },
-            human,
         )
         return error.exit_code
     except (KeyboardInterrupt, EOFError):
         emit(
             {
-                "schema_version": 1,
-                "ok": False,
-                "error": {"code": "cancelled", "message": "Operation cancelled.", "details": {}},
+                "error": {
+                    "code": "cancelled",
+                    "message": "Operation cancelled.",
+                    "details": {},
+                },
             },
-            human,
         )
         return 130
     except Exception:
         emit(
             {
-                "schema_version": 1,
-                "ok": False,
                 "error": {
                     "code": "internal_error",
                     "message": "Unexpected internal failure.",
                     "details": {},
                 },
             },
-            human,
         )
         return 1
 

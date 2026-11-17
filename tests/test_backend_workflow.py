@@ -33,7 +33,8 @@ def test_missing_remote_identifiers_are_not_found(code):
 
 
 def test_wall_clock_deadline_interrupts_blocking_operation():
-    backend = RTMBackend("key", "secret", "token", timeout=0.02)
+    backend = RTMBackend("key", "secret", "token")
+    backend._timeout = 0.02
     started = time.monotonic()
     with pytest.raises(MooError) as error:
         backend.run(lambda: time.sleep(10))
@@ -67,3 +68,32 @@ def test_tag_mutations_use_additive_endpoints_and_owned_output(remove):
         {"timeline": "1", "tags": "agent-ready"},
         mutation=True,
     )
+
+
+def test_multiple_requests_share_one_wall_clock_budget():
+    backend = RTMBackend("key", "secret", "token")
+    backend._timeout = 0.1
+    response = Mock()
+    response.read.side_effect = lambda size: (
+        time.sleep(0.06),
+        b'{"rsp":{"stat":"ok"}}',
+    )[1]
+    backend.opener = Mock()
+    backend.opener.open.return_value.__enter__ = Mock(return_value=response)
+    backend.opener.open.return_value.__exit__ = Mock(return_value=False)
+    with pytest.raises(MooError) as error:
+        backend.run(lambda: [backend.call("lists.getList") for _ in range(3)])
+    assert error.value.exit_code == 6
+    assert error.value.details == {"write_may_have_applied": False}
+    assert backend.opener.open.call_count == 2
+    timeouts = [call.kwargs["timeout"] for call in backend.opener.open.call_args_list]
+    assert 0 < timeouts[1] < timeouts[0] <= 0.1
+
+
+def test_nested_deadline_preserves_outer_budget():
+    from moo.backends.rtm import deadline
+
+    with pytest.raises(TimeoutError), deadline(0.04):
+        with deadline(1):
+            time.sleep(0.01)
+        time.sleep(1)

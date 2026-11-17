@@ -1,12 +1,11 @@
 # Output contract
 
-This document describes moo's current JSON output, schema version **1**. Use this
-format for scripts and integrations. Global options such as `--human` and
-`--timeout` must precede the command.
+This document describes moo's output contract for AI agents interacting with
+Remember The Milk.
 
 ## Streams and encoding
 
-By default, each completed command invocation writes one JSON object on one line
+Each completed command invocation writes one JSON object on one line
 to **stdout**, followed by a newline. Both successful results and structured errors
 use stdout. Non-ASCII characters are escaped using JSON Unicode escapes.
 
@@ -17,36 +16,34 @@ requires an interactive terminal and may wait for confirmation; task commands,
 Help and version output are plain text, not JSON. An externally killed process is
 not guaranteed to produce a result.
 
-## Envelopes and schema version
+## Result shape
 
-Success, with exit code 0:
-
-```json
-{"schema_version": 1, "ok": true, "data": {"tasks": []}}
-```
-
-Failure, with a nonzero exit code:
+Success returns the command-specific object directly, with exit code 0:
 
 ```json
-{"schema_version": 1, "ok": false, "error": {"code": "not_found", "message": "List not found.", "details": {}}}
+{"tasks": []}
 ```
 
-- `schema_version` is an integer identifying the output schema, not the package
-  version. The current implementation emits `1` for success and error envelopes.
-- `ok` is a boolean. Successful envelopes contain `data`; failed envelopes contain
-  `error` instead.
-- `data` is a command-specific object, described below.
+Failure returns an `error` object, with a nonzero exit code:
+
+```json
+{"error": {"code": "not_found", "message": "List not found.", "details": {}}}
+```
+
+- There is no `schema_version`, `ok`, or `data` wrapper.
+- `error` is reserved for failures and never appears as a top-level success field.
+  Agents can recognize failure from this field without inspecting the exit code.
+- Success fields are command-specific, described below.
 - `error.code` is a machine-readable string; branch on it rather than the message.
 - `error.message` is explanatory text, not a stable parsing interface.
 - `error.details` is always an object, possibly empty.
 
-Consumers should check the schema version and tolerate unknown object fields.
-This document describes the current implementation; it does not establish a
-separate release compatibility policy.
+Consumers should tolerate unknown object fields. This document does not establish
+a separate release compatibility policy.
 
 ## Command results
 
-The following shapes describe the contents of `data`, not the outer envelope.
+The following shapes describe the complete success object written to stdout.
 `Task`, `Note`, and `List` refer to the models below.
 
 | Command | Result |
@@ -147,9 +144,14 @@ Depending on the failure, `details` can include:
 
 ## Timeouts, retries, and uncertain writes
 
-moo never automatically retries a request. `--timeout SECONDS` sets the operation
-deadline (default 30 seconds, greater than 0 and at most 300). Authentication's
-network phases each have a deadline, but waiting for human approval does not.
+moo never automatically retries a request. Commands have a fixed 10-second total
+operation deadline, shared across all requests, not 10 seconds per request. There
+is no `--timeout` option. Exceeding the deadline returns `deadline_exceeded` with
+exit code 6.
+
+For interactive authentication, waiting for human approval is excluded from the
+10-second operation budget; network work before and after approval shares that
+budget.
 
 A failed command does **not** necessarily mean a change was rolled back. When
 `write_may_have_applied` is true, inspect the task before retrying, particularly
@@ -161,20 +163,16 @@ If a move may have succeeded, rediscover the task in the destination list rather
 than relying on its previous reference. Commands do not provide a multi-command
 transaction, task lock, or atomic claim.
 
-## `--human` output
+## Single output format
 
-`moo --human ...` keeps the same exit codes but changes stdout:
-
-- Success prints only `data` as indented JSON, without `schema_version` or `ok`.
-- Failure prints `CODE: MESSAGE` as plain text, without structured details.
-
-This is not a table view or a separate versioned machine interface. Use the default
-JSON envelopes for integrations.
+There is no `--human` option or alternative result rendering mode. Success and
+failure results use the single-line JSON format above. Help and version remain
+plain-text exceptions.
 
 ## Implementation references
 
 - `src/moo/contracts.py`: models, task references, and backend interface.
-- `src/moo/cli.py`: command result wrapping, rendering, and exit handling.
+- `src/moo/cli.py`: command results, JSON rendering, and exit handling.
 - `src/moo/backends/rtm.py`: RTM result normalization and failure mapping.
 - `src/moo/auth.py`: authorization and logout results.
 - `tests/test_cli_contract.py`: CLI contract tests.

@@ -6,7 +6,13 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from moo.auth import Credentials, authenticate, load_credentials, logout, save_credentials
+from moo.auth import (
+    Credentials,
+    authenticate,
+    load_credentials,
+    logout,
+    save_credentials,
+)
 from moo.contracts import MooError
 
 
@@ -88,7 +94,9 @@ def test_same_environment_app_reuses_token(monkeypatch: pytest.MonkeyPatch) -> N
     assert load_credentials().token == "token"
 
 
-@pytest.mark.parametrize("contents", ["{", "[]", '{"api_key": 123}', '{"token": false}'])
+@pytest.mark.parametrize(
+    "contents", ["{", "[]", '{"api_key": 123}', '{"token": false}']
+)
 def test_invalid_config(config: Path, contents: str) -> None:
     config.parent.mkdir()
     config.write_text(contents)
@@ -98,7 +106,9 @@ def test_invalid_config(config: Path, contents: str) -> None:
     assert contents not in str(caught.value)
 
 
-def test_missing_credentials_and_optional_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_credentials_and_optional_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with pytest.raises(MooError) as caught:
         load_credentials()
     assert caught.value.exit_code == 3
@@ -112,9 +122,11 @@ def test_missing_credentials_and_optional_token(monkeypatch: pytest.MonkeyPatch)
 def test_atomic_write_failure_preserves_saved_credentials(config: Path) -> None:
     credentials = Credentials("key", "secret", "old")
     save_credentials(credentials)
-    with patch("moo.auth.os.replace", side_effect=OSError("sensitive")):
-        with pytest.raises(MooError) as caught:
-            save_credentials(Credentials("key", "secret", "new"))
+    with (
+        patch("moo.auth.os.replace", side_effect=OSError("sensitive")),
+        pytest.raises(MooError) as caught,
+    ):
+        save_credentials(Credentials("key", "secret", "new"))
     assert caught.value.exit_code == 3
     assert "sensitive" not in str(caught.value)
     assert load_credentials() == credentials
@@ -128,7 +140,10 @@ def test_logout_preserves_app_and_environment(
     monkeypatch.setenv("RTM_AUTH_TOKEN", "environment-token")
     result = logout()
     assert result["token_removed"] is True
-    assert json.loads(config.read_text()) == {"api_key": "key", "shared_secret": "secret"}
+    assert json.loads(config.read_text()) == {
+        "api_key": "key",
+        "shared_secret": "secret",
+    }
     assert os.environ["RTM_AUTH_TOKEN"] == "environment-token"
     assert "Environment" in str(result["message"])
     assert "Revoke" in str(result["message"])
@@ -140,35 +155,46 @@ def test_logout_without_config(config: Path) -> None:
 
 
 def test_noninteractive_auth_never_calls_network(backend: Mock) -> None:
-    with patch("moo.auth.sys.stdin.isatty", return_value=False):
-        with pytest.raises(MooError) as caught:
-            authenticate(Credentials("key", "secret", "token"), backend)
+    with (
+        patch("moo.auth.sys.stdin.isatty", return_value=False),
+        pytest.raises(MooError) as caught,
+    ):
+        authenticate(Credentials("key", "secret", "token"), backend)
     assert caught.value.exit_code == 3
     assert backend.mock_calls == []
 
 
 def test_existing_token_is_checked_without_replacement(backend: Mock) -> None:
     with patch("moo.auth.sys.stdin.isatty", return_value=True):
-        assert authenticate(Credentials("key", "secret", "token"), backend) == {"valid": True}
+        assert authenticate(Credentials("key", "secret", "token"), backend) == {
+            "valid": True
+        }
     backend.check_token.assert_called_once_with()
     backend.auth_url.assert_not_called()
 
 
 def test_invalid_token_instructs_force(backend: Mock) -> None:
     backend.check_token.side_effect = MooError("auth_error", "private error", 3)
-    with patch("moo.auth.sys.stdin.isatty", return_value=True), pytest.raises(MooError) as caught:
+    with (
+        patch("moo.auth.sys.stdin.isatty", return_value=True),
+        pytest.raises(MooError) as caught,
+    ):
         authenticate(Credentials("key", "secret", "token"), backend)
     assert "--force" in str(caught.value)
     backend.auth_url.assert_not_called()
 
 
-def test_successful_auth_is_stderr_only(backend: Mock, capsys: pytest.CaptureFixture[str]) -> None:
+def test_successful_auth_is_stderr_only(
+    backend: Mock, capsys: pytest.CaptureFixture[str]
+) -> None:
     with (
         patch("moo.auth.sys.stdin.isatty", return_value=True),
         patch("builtins.input", return_value=""),
         patch("moo.auth.subprocess.run") as browser,
     ):
-        assert authenticate(Credentials("key", "secret"), backend)["authenticated"] is True
+        assert (
+            authenticate(Credentials("key", "secret"), backend)["authenticated"] is True
+        )
     assert load_credentials() == Credentials("key", "secret", "new-token")
     browser.assert_not_called()
     output = capsys.readouterr()
@@ -197,7 +223,9 @@ def test_config_read_error(config: Path) -> None:
 
 
 @pytest.mark.parametrize("cancel", [EOFError, KeyboardInterrupt])
-def test_cancellation_preserves_credentials(backend: Mock, cancel: type[BaseException]) -> None:
+def test_cancellation_preserves_credentials(
+    backend: Mock, cancel: type[BaseException]
+) -> None:
     original = Credentials("key", "secret", "old-token")
     save_credentials(original)
     with (
@@ -222,7 +250,8 @@ def test_browser_is_bounded_and_optional(
         patch("moo.auth.sys.stdin.isatty", return_value=True),
         patch("builtins.input", return_value=""),
         patch(
-            "moo.auth.subprocess.run", side_effect=subprocess.TimeoutExpired("browser", 5)
+            "moo.auth.subprocess.run",
+            side_effect=subprocess.TimeoutExpired("browser", 5),
         ) as browser,
     ):
         authenticate(Credentials("key", "secret"), backend, no_browser=no_browser)
@@ -231,3 +260,91 @@ def test_browser_is_bounded_and_optional(
     else:
         assert browser.call_args.kwargs["timeout"] == 5
     assert load_credentials().token == "new-token"
+
+
+def test_auth_phases_share_budget_excluding_approval_wait(backend: Mock) -> None:
+    from contextlib import contextmanager
+
+    budgets = []
+    clock = [0.0]
+
+    @contextmanager
+    def bounded(seconds):
+        budgets.append(seconds)
+        yield
+
+    def authorize():
+        clock[0] += 3
+        return "https://example.com/authorize"
+
+    def approve():
+        clock[0] += 1000
+        return ""
+
+    backend.auth_url.side_effect = authorize
+    with (
+        patch("moo.auth.sys.stdin.isatty", return_value=True),
+        patch("moo.auth.monotonic", side_effect=lambda: clock[0]),
+        patch("moo.auth.deadline", side_effect=bounded),
+        patch("builtins.input", side_effect=approve),
+    ):
+        authenticate(Credentials("key", "secret"), backend, no_browser=True)
+    assert budgets == [10.0, 7.0]
+    backend.auth_url.assert_called_once_with()
+    backend.exchange_token.assert_called_once_with()
+
+
+@pytest.mark.parametrize("existing_token", [False, True])
+def test_auth_network_phase_is_wall_clock_bounded(
+    backend: Mock, config: Path, existing_token: bool
+) -> None:
+    import time
+
+    operation = backend.check_token if existing_token else backend.auth_url
+    operation.side_effect = lambda: time.sleep(1)
+    credentials = Credentials("key", "secret", "old" if existing_token else None)
+    with (
+        patch("moo.auth.sys.stdin.isatty", return_value=True),
+        patch("moo.auth.OPERATION_TIMEOUT", 0.02),
+        pytest.raises(MooError) as caught,
+    ):
+        authenticate(credentials, backend)
+    assert caught.value.code == "deadline_exceeded"
+    assert caught.value.exit_code == 6
+    operation.assert_called_once_with()
+    backend.exchange_token.assert_not_called()
+    assert not config.exists()
+
+
+def test_real_auth_backend_does_not_reset_budget_between_phases(config: Path) -> None:
+    import time
+
+    from moo.backends.rtm import RTMBackend
+
+    backend = RTMBackend("key", "secret", None)
+    response = Mock()
+    response.read.side_effect = [
+        b'{"rsp":{"stat":"ok","frob":"temporary"}}',
+        b'{"rsp":{"stat":"ok","auth":{"token":"new"}}}',
+    ]
+    opener = Mock()
+    backend.opener = opener
+    opener.open.return_value.__enter__ = Mock(return_value=response)
+    opener.open.return_value.__exit__ = Mock(return_value=False)
+
+    def open_request(*args, **kwargs):
+        time.sleep(0.04)
+        return opener.open.return_value
+
+    backend.opener.open.side_effect = open_request
+    with (
+        patch("moo.auth.sys.stdin.isatty", return_value=True),
+        patch("moo.auth.OPERATION_TIMEOUT", 0.06),
+        patch("builtins.input", return_value=""),
+        pytest.raises(MooError) as caught,
+    ):
+        authenticate(Credentials("key", "secret"), backend, no_browser=True)
+    assert caught.value.exit_code == 6
+    assert backend.opener.open.call_count == 2
+    assert response.read.call_count == 1
+    assert not config.exists()

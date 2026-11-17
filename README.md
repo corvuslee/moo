@@ -63,9 +63,8 @@ moo tasks tags remove 123:456:789 --tag waiting
 # Move a task to another list and inspect its updated reference
 moo tasks move 123:456:789 --to-list-id 321
 moo tasks show 321:456:789
-
-# Display readable text instead of JSON
-moo --human tasks list --list-id 123
 ```
 
-For scripts and integrations, see the [output contract](docs/output-contract.md).
+Commands return single-line JSON with a fixed 10-second operation deadline and no
+automatic retries. For agents and integrations, see the
+[output contract](docs/output-contract.md).

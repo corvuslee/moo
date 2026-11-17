@@ -16,7 +16,7 @@ from moo.contracts import MooError, Note, TaskRef
 @pytest.fixture
 def backend(monkeypatch):
     monkeypatch.setattr(rtm, "deadline", lambda seconds: nullcontext())
-    value = rtm.RTMBackend("key", "secret", "token", timeout=2.5)
+    value = rtm.RTMBackend("key", "secret", "token")
     value.opener = MagicMock()
     return value
 
@@ -74,7 +74,7 @@ def test_call_signs_post_and_passes_timeout(backend):
         "filter": "tag:café & milk",
     }
     assert signature == rtm.signature("secret", params)
-    backend.opener.open.assert_called_once_with(request, timeout=2.5)
+    backend.opener.open.assert_called_once_with(request, timeout=10.0)
     response.read.assert_called_once_with(8_000_001)
 
 
@@ -97,7 +97,10 @@ def test_unauthenticated_call_omits_token(backend):
 @pytest.mark.parametrize("empty", [None, "", [], {}])
 def test_empty_task_collections(empty):
     assert rtm.normalize_tasks({"tasks": {"list": empty}}) == []
-    assert rtm.normalize_tasks({"tasks": {"list": {"id": "10", "taskseries": empty}}}) == []
+    assert (
+        rtm.normalize_tasks({"tasks": {"list": {"id": "10", "taskseries": empty}}})
+        == []
+    )
 
 
 @pytest.mark.parametrize("plural", [False, True])
@@ -110,7 +113,9 @@ def test_single_and_plural_task_shapes(plural):
         task_list["taskseries"] = [series]
         body["tasks"]["list"] = [task_list]
     tasks = rtm.normalize_tasks(body)
-    assert [task.ref for task in tasks] == (["10:20:30", "10:20:31"] if plural else ["10:20:30"])
+    assert [task.ref for task in tasks] == (
+        ["10:20:30", "10:20:31"] if plural else ["10:20:30"]
+    )
     assert tasks[0].name == "Buy milk"
     assert tasks[0].completed is None
     assert tasks[0].due is None
@@ -154,8 +159,12 @@ def test_deleted_tasks_are_omitted_and_recurring_is_preserved():
 
 
 @pytest.mark.parametrize("mutation", [False, True])
-@pytest.mark.parametrize("failure", [URLError("offline"), OSError("closed"), TimeoutError()])
-def test_transport_failure_is_not_retried_and_reports_uncertainty(backend, mutation, failure):
+@pytest.mark.parametrize(
+    "failure", [URLError("offline"), OSError("closed"), TimeoutError()]
+)
+def test_transport_failure_is_not_retried_and_reports_uncertainty(
+    backend, mutation, failure
+):
     backend.opener.open.side_effect = failure
     with pytest.raises(MooError) as error:
         backend.call("tasks.addTags", mutation=mutation)
@@ -175,7 +184,9 @@ def test_transport_failure_is_not_retried_and_reports_uncertainty(backend, mutat
     ],
 )
 def test_http_error_mapping_without_retries(backend, status, code):
-    backend.opener.open.side_effect = HTTPError(rtm.REST_URL, status, "failed", Message(), None)
+    backend.opener.open.side_effect = HTTPError(
+        rtm.REST_URL, status, "failed", Message(), None
+    )
     with pytest.raises(MooError) as error:
         backend.call("tasks.getList")
     assert_error(error, code, 7)
@@ -255,7 +266,9 @@ def test_api_error_mappings(backend, api_code):
         assert_error(error, "upstream_error", 7)
     else:
         assert_error(
-            error, "authentication_failed" if auth else "operation_rejected", 3 if auth else 5
+            error,
+            "authentication_failed" if auth else "operation_rejected",
+            3 if auth else 5,
         )
     assert error.value.details == {"api_code": str(api_code)}
     backend.opener.open.assert_called_once()
@@ -281,7 +294,9 @@ def test_malformed_task_shapes_are_structured_errors(backend, body):
 
 
 @pytest.mark.parametrize("write_attempted", [False, True])
-def test_operation_deadline_reports_prior_write_and_does_not_retry(backend, write_attempted):
+def test_operation_deadline_reports_prior_write_and_does_not_retry(
+    backend, write_attempted
+):
     def operation():
         backend.write_attempted = write_attempted
         raise TimeoutError
@@ -296,7 +311,9 @@ def test_operation_deadline_reports_prior_write_and_does_not_retry(backend, writ
 
 @pytest.mark.parametrize("mutation", ["note", "add_tags", "remove_tags", "move"])
 @pytest.mark.parametrize("state", ["recurring", "completed", "smart", "archived"])
-def test_unsafe_mutations_are_rejected_before_timeline_or_write(backend, mutation, state):
+def test_unsafe_mutations_are_rejected_before_timeline_or_write(
+    backend, mutation, state
+):
     lists = [
         {
             "id": "10",
@@ -329,7 +346,8 @@ def test_unsafe_mutations_are_rejected_before_timeline_or_write(backend, mutatio
         operations[mutation]()
     assert_error(error, "invalid_state", 5)
     assert all(
-        call.args[0] in {"lists.getList", "tasks.getList"} for call in backend.call.call_args_list
+        call.args[0] in {"lists.getList", "tasks.getList"}
+        for call in backend.call.call_args_list
     )
     backend.opener.open.assert_not_called()
 
@@ -367,7 +385,10 @@ def test_move_returns_updated_reference_and_sends_source_and_destination(backend
         if method == "lists.getList":
             return {
                 "lists": {
-                    "list": [{"id": "10", "name": "Source"}, {"id": "11", "name": "Destination"}]
+                    "list": [
+                        {"id": "10", "name": "Source"},
+                        {"id": "11", "name": "Destination"},
+                    ]
                 }
             }
         if method == "tasks.getList":
@@ -394,4 +415,6 @@ def test_move_returns_updated_reference_and_sends_source_and_destination(backend
         "ref": "11:21:31",
         "previous_ref": "10:20:30",
     }
-    assert [call.args[0] for call in backend.call.call_args_list].count("tasks.moveTo") == 1
+    assert [call.args[0] for call in backend.call.call_args_list].count(
+        "tasks.moveTo"
+    ) == 1

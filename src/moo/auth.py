@@ -3,11 +3,16 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol
+from time import monotonic
+from typing import Protocol, TypeVar
 
+from moo.backends.rtm import OPERATION_TIMEOUT, deadline
 from moo.contracts import MooError
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -28,7 +33,9 @@ def _config_path() -> Path:
     if override:
         return Path(override).expanduser()
     root = os.environ.get("XDG_CONFIG_HOME")
-    return (Path(root).expanduser() if root else Path.home() / ".config") / "moo/credentials.json"
+    return (
+        Path(root).expanduser() if root else Path.home() / ".config"
+    ) / "moo/credentials.json"
 
 
 def _read_config() -> dict[str, object]:
@@ -38,14 +45,20 @@ def _read_config() -> dict[str, object]:
     except FileNotFoundError:
         return {}
     except (OSError, ValueError):
-        raise MooError("config_error", "Cannot read the credentials configuration.", 3) from None
+        raise MooError(
+            "config_error", "Cannot read the credentials configuration.", 3
+        ) from None
     if not isinstance(data, dict) or not all(isinstance(key, str) for key in data):
-        raise MooError("config_error", "Credentials configuration must be a JSON object.", 3)
+        raise MooError(
+            "config_error", "Credentials configuration must be a JSON object.", 3
+        )
     result: dict[str, object] = dict(data)
     for key in ("api_key", "shared_secret", "token"):
         value = result.get(key)
         if value is not None and not isinstance(value, str):
-            raise MooError("config_error", "Credentials configuration has invalid fields.", 3)
+            raise MooError(
+                "config_error", "Credentials configuration has invalid fields.", 3
+            )
     return result
 
 
@@ -54,15 +67,28 @@ def load_credentials(require_token: bool = True) -> Credentials:
     api_key = os.environ.get("RTM_API_KEY", saved.get("api_key"))
     secret = os.environ.get("RTM_SHARED_SECRET", saved.get("shared_secret"))
     token = os.environ.get("RTM_AUTH_TOKEN")
-    if token is None and api_key == saved.get("api_key") and secret == saved.get("shared_secret"):
+    if (
+        token is None
+        and api_key == saved.get("api_key")
+        and secret == saved.get("shared_secret")
+    ):
         stored_token = saved.get("token")
         token = stored_token if isinstance(stored_token, str) else None
-    if not isinstance(api_key, str) or not api_key or not isinstance(secret, str) or not secret:
+    if (
+        not isinstance(api_key, str)
+        or not api_key
+        or not isinstance(secret, str)
+        or not secret
+    ):
         raise MooError(
-            "config_error", "Set RTM_API_KEY and RTM_SHARED_SECRET or save app credentials.", 3
+            "config_error",
+            "Set RTM_API_KEY and RTM_SHARED_SECRET or save app credentials.",
+            3,
         )
     if require_token and not token:
-        raise MooError("config_error", "No authentication token configured. Run moo auth.", 3)
+        raise MooError(
+            "config_error", "No authentication token configured. Run moo auth.", 3
+        )
     return Credentials(api_key, secret, token or None)
 
 
@@ -72,7 +98,11 @@ def _write_config(data: dict[str, object]) -> None:
         path = _config_path()
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, prefix=".credentials-", delete=False
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".credentials-",
+            delete=False,
         ) as stream:
             temporary = stream.name
             os.fchmod(stream.fileno(), 0o600)
@@ -83,7 +113,9 @@ def _write_config(data: dict[str, object]) -> None:
         os.replace(temporary, path)
         temporary = None
     except (OSError, ValueError):
-        raise MooError("config_error", "Cannot save the credentials configuration.", 3) from None
+        raise MooError(
+            "config_error", "Cannot save the credentials configuration.", 3
+        ) from None
     finally:
         if temporary is not None:
             try:
@@ -134,10 +166,30 @@ def authenticate(
     no_browser: bool = False,
 ) -> dict[str, object]:
     if not sys.stdin.isatty():
-        raise MooError("auth_requires_tty", "Authentication requires an interactive terminal.", 3)
+        raise MooError(
+            "auth_requires_tty", "Authentication requires an interactive terminal.", 3
+        )
+    remaining = OPERATION_TIMEOUT
+
+    def network_phase(operation: Callable[[], T]) -> T:
+        nonlocal remaining
+        started = monotonic()
+        try:
+            with deadline(remaining):
+                return operation()
+        except TimeoutError:
+            raise MooError(
+                "deadline_exceeded",
+                "Operation deadline exceeded; no retry performed.",
+                6,
+                {"write_may_have_applied": False},
+            ) from None
+        finally:
+            remaining -= monotonic() - started
+
     if credentials.token and not force:
         try:
-            return backend.check_token()
+            return network_phase(backend.check_token)
         except MooError as error:
             raise MooError(
                 error.code,
@@ -146,17 +198,22 @@ def authenticate(
                 error.exit_code,
             ) from None
     try:
-        url = backend.auth_url()
+        url = network_phase(backend.auth_url)
         print("Authorize moo in your browser:", file=sys.stderr)
         print(url, file=sys.stderr)
         if not no_browser:
             _open_browser(url)
-        print("After granting access, press Enter to continue (Ctrl-C to cancel).", file=sys.stderr)
+        print(
+            "After granting access, press Enter to continue (Ctrl-C to cancel).",
+            file=sys.stderr,
+        )
         input()
-        token = backend.exchange_token()
+        token = network_phase(backend.exchange_token)
         if not token:
             raise MooError("auth_error", "Remember The Milk did not return a token.", 3)
-        save_credentials(Credentials(credentials.api_key, credentials.shared_secret, token))
+        save_credentials(
+            Credentials(credentials.api_key, credentials.shared_secret, token)
+        )
     except (EOFError, KeyboardInterrupt):
         raise MooError(
             "cancelled", "Authentication cancelled; credentials were not changed.", 130

@@ -1,5 +1,5 @@
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -12,7 +12,10 @@ class FakeBackend:
         self.task = Task("1:2:3", "1", "2", "3", "Implement feature", ["agent-ready"])
 
     def lists(self):
-        return [TaskList("1", "Agent", False, False), TaskList("4", "Review", False, False)]
+        return [
+            TaskList("1", "Agent", False, False),
+            TaskList("4", "Review", False, False),
+        ]
 
     def tasks(self, list_id, tags, include_completed):
         return [self.task] if set(tags).issubset(self.task.tags) else []
@@ -65,30 +68,45 @@ class FakeBackend:
 
 def invoke(arguments, backend, capsys):
     code = run(arguments, lambda args: backend)
-    return code, json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.endswith("\n")
+    assert len(captured.out.splitlines()) == 1
+    return code, json.loads(captured.out)
 
 
 def test_agent_workflow(capsys):
     backend = FakeBackend()
-    for command in [
-        ["lists", "list"],
-        ["tasks", "list", "--list-id", "1", "--tag", "agent-ready"],
-        ["tasks", "show", "1:2:3"],
-        ["tasks", "tags", "add", "1:2:3", "--tag", "in-progress"],
-        ["tasks", "tags", "remove", "1:2:3", "--tag", "agent-ready"],
-        ["tasks", "notes", "add", "1:2:3", "--title", "Progress", "--text", "Tests pass"],
-        ["tasks", "tags", "add", "1:2:3", "--tag", "needs-review"],
-        ["tasks", "move", "1:2:3", "--to-list-id", "4"],
+    for command, fields in [
+        (["lists", "list"], {"lists"}),
+        (["tasks", "list", "--list-id", "1", "--tag", "agent-ready"], {"tasks"}),
+        (["tasks", "show", "1:2:3"], {"task"}),
+        (["tasks", "tags", "add", "1:2:3", "--tag", "in-progress"], {"task"}),
+        (["tasks", "tags", "remove", "1:2:3", "--tag", "agent-ready"], {"task"}),
+        (
+            [
+                "tasks",
+                "notes",
+                "add",
+                "1:2:3",
+                "--title",
+                "Progress",
+                "--text",
+                "Tests pass",
+            ],
+            {"ref", "note"},
+        ),
+        (["tasks", "tags", "add", "1:2:3", "--tag", "needs-review"], {"task"}),
+        (["tasks", "move", "1:2:3", "--to-list-id", "4"], {"ref", "previous_ref"}),
     ]:
         code, body = invoke(command, backend, capsys)
         assert code == 0
-        assert body["ok"] is True
-        assert body["schema_version"] == 1
+        assert set(body) == fields
     code, body = invoke(["tasks", "list", "--tag", "agent-ready"], backend, capsys)
     assert code == 0
-    assert body["data"]["tasks"] == []
+    assert body["tasks"] == []
     code, body = invoke(["tasks", "show", "4:2:3"], backend, capsys)
-    assert body["data"]["task"]["notes"][0]["text"] == "Tests pass"
+    assert body["task"]["notes"][0]["text"] == "Tests pass"
 
 
 @pytest.mark.parametrize(
@@ -100,8 +118,8 @@ def test_agent_workflow(capsys):
         ["tasks", "show", "bad"],
         ["tasks", "list", "--list-id", "not-an-id"],
         ["tasks", "list", "--tag", "two,tags"],
-        ["--timeout", "nan", "lists", "list"],
-        ["--timeout", "0", "lists", "list"],
+        ["--human", "lists", "list"],
+        ["--timeout", "10", "lists", "list"],
         ["tasks", "notes", "add", "1:2:3", "--title", "", "--text", "value"],
     ],
 )
@@ -122,22 +140,59 @@ def test_error_contract(code, capsys):
     assert run(["lists", "list"], fail) == code
     body = json.loads(capsys.readouterr().out)
     assert body == {
-        "schema_version": 1,
-        "ok": False,
         "error": {"code": "failure", "message": "Safe message", "details": {}},
     }
 
 
-def test_internal_errors_do_not_leak_secrets(capsys):
+@pytest.mark.parametrize(
+    ("failure", "exit_code", "code", "message"),
+    [
+        (
+            RuntimeError("secret token"),
+            1,
+            "internal_error",
+            "Unexpected internal failure.",
+        ),
+        (KeyboardInterrupt(), 130, "cancelled", "Operation cancelled."),
+        (EOFError(), 130, "cancelled", "Operation cancelled."),
+    ],
+)
+def test_safe_error_results(failure, exit_code, code, message, capsys):
     def fail(args):
-        raise RuntimeError("secret token")
+        raise failure
 
-    assert run(["lists", "list"], fail) == 1
-    assert "secret token" not in capsys.readouterr().out
+    assert run(["lists", "list"], fail) == exit_code
+    assert json.loads(capsys.readouterr().out) == {
+        "error": {"code": code, "message": message, "details": {}}
+    }
+
+
+@pytest.mark.parametrize("option", ["--help", "--version"])
+def test_help_and_version_remain_plain_text(option, capsys):
+    with pytest.raises(SystemExit) as caught:
+        run([option])
+    assert caught.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "moo" in captured.out
+    assert not captured.out.startswith("{")
+
+
+def test_unicode_is_escaped(capsys):
+    backend = FakeBackend()
+    backend.task = replace(backend.task, name="Café\nUpdate")
+    assert run(["tasks", "show", "1:2:3"], lambda args: backend) == 0
+    output = capsys.readouterr().out
+    assert output.isascii()
+    assert len(output.splitlines()) == 1
+    assert json.loads(output) == {"task": asdict(backend.task)}
 
 
 def test_status(capsys):
-    assert invoke(["auth", "status"], FakeBackend(), capsys)[1]["data"]["authorized"]
+    assert invoke(["auth", "status"], FakeBackend(), capsys) == (
+        0,
+        {"authorized": True},
+    )
 
 
 def test_no_implicit_loop(capsys):

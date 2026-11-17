@@ -5,6 +5,7 @@ import signal
 from contextlib import contextmanager
 from dataclasses import asdict
 from hashlib import md5
+from time import monotonic
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -14,6 +15,7 @@ from moo.contracts import MooError, Note, Task, TaskList, TaskRef
 
 REST_URL = "https://api.rememberthemilk.com/services/rest/"
 AUTH_URL = "https://www.rememberthemilk.com/services/auth/"
+OPERATION_TIMEOUT = 10.0
 
 
 def signature(secret: str, params: dict[str, str]) -> str:
@@ -31,13 +33,25 @@ def deadline(seconds: float):
     def expired(signum, frame):
         raise TimeoutError
 
+    if seconds <= 0:
+        raise TimeoutError
     previous = signal.signal(signal.SIGALRM, expired)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
+    remaining, interval = signal.getitimer(signal.ITIMER_REAL)
+    started = monotonic()
+    signal.setitimer(
+        signal.ITIMER_REAL, min(seconds, remaining) if remaining else seconds
+    )
     try:
         yield
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
+        if remaining:
+            signal.setitimer(
+                signal.ITIMER_REAL,
+                max(remaining - (monotonic() - started), 1e-6),
+                interval,
+            )
 
 
 def items(value: Any) -> list[dict[str, Any]]:
@@ -58,7 +72,9 @@ def normalize_tasks(response: dict[str, Any]) -> list[Task]:
             tags = raw_tags.get("tag", []) if isinstance(raw_tags, dict) else raw_tags
             if isinstance(tags, str):
                 tags = [tags]
-            if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+            if not isinstance(tags, list) or not all(
+                isinstance(tag, str) for tag in tags
+            ):
                 raise MooError("invalid_response", "RTM returned invalid tags.", 7)
             raw_notes = series.get("notes") or {}
             notes = [
@@ -96,11 +112,11 @@ def normalize_tasks(response: dict[str, Any]) -> list[Task]:
 
 
 class RTMBackend:
-    def __init__(self, api_key: str, shared_secret: str, token: str | None, timeout: float = 30):
+    def __init__(self, api_key: str, shared_secret: str, token: str | None):
         self.api_key = api_key
         self.shared_secret = shared_secret
         self.token = token
-        self.timeout = timeout
+        self._timeout = OPERATION_TIMEOUT
         self.frob: str | None = None
         self.opener = build_opener(NoRedirect())
         self.write_attempted = False
@@ -116,13 +132,17 @@ class RTMBackend:
         payload.update(params or {})
         if authenticated:
             if not self.token:
-                raise MooError("authentication_required", "Run moo auth to authorize access.", 3)
+                raise MooError(
+                    "authentication_required", "Run moo auth to authorize access.", 3
+                )
             payload["auth_token"] = self.token
         payload["api_sig"] = signature(self.shared_secret, payload)
         request = Request(REST_URL, data=urlencode(payload).encode(), method="POST")
         self.write_attempted = self.write_attempted or mutation
         try:
-            with self.opener.open(request, timeout=self.timeout) as response:
+            remaining = signal.getitimer(signal.ITIMER_REAL)[0]
+            timeout = min(self._timeout, remaining) if remaining else self._timeout
+            with self.opener.open(request, timeout=timeout) as response:
                 raw = response.read(8_000_001)
             if len(raw) > 8_000_000:
                 raise MooError(
@@ -165,11 +185,17 @@ class RTMBackend:
             api_code = str(error_data.get("code", ""))
             if api_code == "105":
                 raise MooError(
-                    "upstream_error", "RTM is temporarily unavailable.", 7, {"api_code": api_code}
+                    "upstream_error",
+                    "RTM is temporarily unavailable.",
+                    7,
+                    {"api_code": api_code},
                 )
             if api_code in {"320", "340"}:
                 raise MooError(
-                    "not_found", "RTM list or task reference not found.", 4, {"api_code": api_code}
+                    "not_found",
+                    "RTM list or task reference not found.",
+                    4,
+                    {"api_code": api_code},
                 )
             if api_code in {"96", "97", "98", "99", "100", "101", "102", "103", "104"}:
                 raise MooError(
@@ -179,14 +205,17 @@ class RTMBackend:
                     {"api_code": api_code},
                 )
             raise MooError(
-                "operation_rejected", "RTM rejected the operation.", 5, {"api_code": api_code}
+                "operation_rejected",
+                "RTM rejected the operation.",
+                5,
+                {"api_code": api_code},
             )
         return body
 
     def run(self, operation):
         self.write_attempted = False
         try:
-            with deadline(self.timeout):
+            with deadline(self._timeout):
                 return operation()
         except TimeoutError:
             raise MooError(
@@ -204,16 +233,22 @@ class RTMBackend:
             ) from None
 
     def auth_url(self) -> str:
-        self.frob = str(self.run(lambda: self.call("auth.getFrob", authenticated=False))["frob"])
+        self.frob = str(
+            self.run(lambda: self.call("auth.getFrob", authenticated=False))["frob"]
+        )
         params = {"api_key": self.api_key, "perms": "delete", "frob": self.frob}
         params["api_sig"] = signature(self.shared_secret, params)
         return AUTH_URL + "?" + urlencode(params)
 
     def exchange_token(self) -> str:
         if not self.frob:
-            raise MooError("authentication_failed", "No pending authorization. Run moo auth.", 3)
+            raise MooError(
+                "authentication_failed", "No pending authorization. Run moo auth.", 3
+            )
         response = self.run(
-            lambda: self.call("auth.getToken", {"frob": self.frob or ""}, authenticated=False)
+            lambda: self.call(
+                "auth.getToken", {"frob": self.frob or ""}, authenticated=False
+            )
         )
         return str(response["auth"]["token"])
 
@@ -249,10 +284,14 @@ class RTMBackend:
         if found is None:
             raise MooError("not_found", "List not found.", 4)
         if writable and (found.smart or found.archived):
-            raise MooError("invalid_state", "Mutations require a non-archived regular list.", 5)
+            raise MooError(
+                "invalid_state", "Mutations require a non-archived regular list.", 5
+            )
         return found
 
-    def tasks(self, list_id: str | None, tags: list[str], include_completed: bool) -> list[Task]:
+    def tasks(
+        self, list_id: str | None, tags: list[str], include_completed: bool
+    ) -> list[Task]:
         def query():
             params = {"filter": "" if include_completed else "status:incomplete"}
             if list_id:
@@ -264,11 +303,15 @@ class RTMBackend:
         return self.run(query)
 
     def _show(self, ref: TaskRef) -> Task:
-        values = normalize_tasks(self.call("tasks.getList", {"list_id": ref.list_id, "filter": ""}))
+        values = normalize_tasks(
+            self.call("tasks.getList", {"list_id": ref.list_id, "filter": ""})
+        )
         for value in values:
             if value.ref == str(ref):
                 return value
-        raise MooError("not_found", "Task reference not found; rediscover after moving a task.", 4)
+        raise MooError(
+            "not_found", "Task reference not found; rediscover after moving a task.", 4
+        )
 
     def show(self, ref: TaskRef) -> Task:
         return self.run(lambda: self._show(ref))
@@ -278,7 +321,9 @@ class RTMBackend:
         task = self._show(ref)
         if task.recurring or task.completed:
             raise MooError(
-                "invalid_state", "Mutations of recurring or completed tasks are unsupported.", 5
+                "invalid_state",
+                "Mutations of recurring or completed tasks are unsupported.",
+                5,
             )
         timeline = str(self.call("timelines.create")["timeline"])
         return {
@@ -292,7 +337,9 @@ class RTMBackend:
         def mutate():
             params = self._prepare(ref)
             response = self.call(
-                "tasks.notes.add", {**params, "note_title": title, "note_text": text}, mutation=True
+                "tasks.notes.add",
+                {**params, "note_title": title, "note_text": text},
+                mutation=True,
             )
             note = response["note"]
             normalized = Note(
@@ -306,11 +353,15 @@ class RTMBackend:
 
         return self.run(mutate)
 
-    def change_tags(self, ref: TaskRef, tags: list[str], remove: bool) -> dict[str, object]:
+    def change_tags(
+        self, ref: TaskRef, tags: list[str], remove: bool
+    ) -> dict[str, object]:
         def mutate():
             params = self._prepare(ref)
             method = "tasks.removeTags" if remove else "tasks.addTags"
-            response = self.call(method, {**params, "tags": ",".join(tags)}, mutation=True)
+            response = self.call(
+                method, {**params, "tags": ",".join(tags)}, mutation=True
+            )
             tasks = normalize_tasks({"tasks": {"list": response["list"]}})
             task = next((task for task in tasks if task.task_id == ref.task_id), None)
             if task is None:
