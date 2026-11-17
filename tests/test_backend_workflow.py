@@ -32,13 +32,28 @@ def test_missing_remote_identifiers_are_not_found(code):
     assert error.value.exit_code == 4
 
 
-def test_wall_clock_deadline_interrupts_blocking_operation():
+@pytest.mark.parametrize("write_attempted", [False, True])
+def test_wall_clock_deadline_interrupts_blocking_operation(write_attempted):
     backend = RTMBackend("key", "secret", "token")
     backend._timeout = 0.02
     started = time.monotonic()
+
+    def operation():
+        backend.write_attempted = write_attempted
+        time.sleep(10)
+
     with pytest.raises(MooError) as error:
-        backend.run(lambda: time.sleep(10))
+        backend.run(operation)
     assert error.value.exit_code == 6
+    assert error.value.code == "deadline_exceeded"
+    assert error.value.message == (
+        "Could not confirm the operation. It may have succeeded. "
+        "Check the task's current state before retrying."
+        if write_attempted
+        else "Operation deadline exceeded; no retry performed."
+    )
+    assert error.value.details is None
+    assert backend.write_attempted is write_attempted
     assert time.monotonic() - started < 2
 
 
@@ -84,7 +99,9 @@ def test_multiple_requests_share_one_wall_clock_budget():
     with pytest.raises(MooError) as error:
         backend.run(lambda: [backend.call("lists.getList") for _ in range(3)])
     assert error.value.exit_code == 6
-    assert error.value.details == {"write_may_have_applied": False}
+    assert error.value.details is None
+    assert error.value.message == "RTM request failed or timed out; no retry performed."
+    assert backend.write_attempted is False
     assert backend.opener.open.call_count == 2
     timeouts = [call.kwargs["timeout"] for call in backend.opener.open.call_args_list]
     assert 0 < timeouts[1] < timeouts[0] <= 0.1

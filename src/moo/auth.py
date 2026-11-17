@@ -182,7 +182,6 @@ def authenticate(
                 "deadline_exceeded",
                 "Operation deadline exceeded; no retry performed.",
                 6,
-                {"write_may_have_applied": False},
             ) from None
         finally:
             remaining -= monotonic() - started

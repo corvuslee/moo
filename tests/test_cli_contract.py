@@ -133,7 +133,9 @@ def test_invalid_arguments_never_construct_backend(arguments, capsys):
 
 
 @pytest.mark.parametrize("code", [3, 4, 5, 6, 7])
-@pytest.mark.parametrize("details", [None, {}, {"write_may_have_applied": False}])
+@pytest.mark.parametrize(
+    "details", [None, {}, {"http_status": 503}, {"retryable": False}]
+)
 def test_error_contract(code, details, capsys):
     def fail(args):
         raise MooError("failure", "Safe message", code, details)

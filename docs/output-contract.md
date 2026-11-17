@@ -37,8 +37,8 @@ Failure returns an `error` object, with a nonzero exit code:
 - `error.code` is a machine-readable string; branch on it rather than the message.
 - `error.message` is explanatory text, not a stable parsing interface.
 - `error.details` is included only when it is a nonempty object. Empty or absent
-  details are omitted; meaningful values such as `write_may_have_applied: false`
-  are preserved.
+  details are omitted; meaningful values, including false-valued fields, are
+  preserved.
 
 Consumers should tolerate unknown object fields. This document does not establish
 a separate release compatibility policy.
@@ -142,7 +142,6 @@ Depending on the failure, `details` can include:
 | --- | --- | --- |
 | `api_code` | string | RTM API error code |
 | `http_status` | integer | Upstream HTTP status |
-| `write_may_have_applied` | boolean | Whether the failed operation may have changed remote state |
 
 ## Timeouts, retries, and uncertain writes
 
@@ -155,11 +154,19 @@ For interactive authentication, waiting for human approval is excluded from the
 10-second operation budget; network work before and after approval shares that
 budget.
 
-A failed command does **not** necessarily mean a change was rolled back. When
-`write_may_have_applied` is true, inspect the task before retrying, particularly
-before adding another note. This field is not present on every error; its absence
-is not proof that no change occurred. An HTTP error after a write can also leave
-the outcome uncertain.
+A failed command does **not** necessarily mean a change was rolled back. If a
+mutation was attempted and its outcome cannot be confirmed because of a transport
+or HTTP failure, an invalid or oversized response, a timeout, or an unexpected
+response shape, `error.message` explains how to recover:
+
+> Could not confirm the operation. It may have succeeded. Check the task's current state before retrying.
+
+Inspect the task before retrying, particularly before adding another note. There
+is no separate uncertainty flag in the output. Errors with no other details omit
+`error.details`; HTTP failures still include `http_status`. Read-only failures
+retain their failure-specific messages. The message is guidance for recovery,
+not a stable parsing interface; continue to branch on `error.code`. A different
+message or absent details is not proof that no change occurred.
 
 If a move may have succeeded, rediscover the task in the destination list rather
 than relying on its previous reference. Commands do not provide a multi-command

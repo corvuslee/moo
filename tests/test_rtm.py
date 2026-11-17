@@ -12,6 +12,11 @@ import pytest
 from moo.backends import rtm
 from moo.contracts import MooError, Note, TaskRef
 
+UNCERTAIN_WRITE_MESSAGE = (
+    "Could not confirm the operation. It may have succeeded. "
+    "Check the task's current state before retrying."
+)
+
 
 @pytest.fixture
 def backend(monkeypatch):
@@ -169,7 +174,12 @@ def test_transport_failure_is_not_retried_and_reports_uncertainty(
     with pytest.raises(MooError) as error:
         backend.call("tasks.addTags", mutation=mutation)
     assert_error(error, "transport_error", 6)
-    assert error.value.details == {"write_may_have_applied": mutation}
+    assert error.value.message == (
+        UNCERTAIN_WRITE_MESSAGE
+        if mutation
+        else "RTM request failed or timed out; no retry performed."
+    )
+    assert error.value.details is None
     assert backend.write_attempted is mutation
     backend.opener.open.assert_called_once()
 
@@ -183,15 +193,21 @@ def test_transport_failure_is_not_retried_and_reports_uncertainty(
         (302, "upstream_error"),
     ],
 )
-def test_http_error_mapping_without_retries(backend, status, code):
+@pytest.mark.parametrize("mutation", [False, True])
+def test_http_error_mapping_without_retries(backend, status, code, mutation):
     backend.opener.open.side_effect = HTTPError(
         rtm.REST_URL, status, "failed", Message(), None
     )
     with pytest.raises(MooError) as error:
-        backend.call("tasks.getList")
+        backend.call(
+            "tasks.addTags" if mutation else "tasks.getList", mutation=mutation
+        )
     assert_error(error, code, 7)
-    assert error.value.details is not None
-    assert error.value.details["http_status"] == status
+    assert error.value.message == (
+        UNCERTAIN_WRITE_MESSAGE if mutation else "RTM HTTP request failed."
+    )
+    assert error.value.details == {"http_status": status}
+    assert backend.write_attempted is mutation
     backend.opener.open.assert_called_once()
 
 
@@ -232,7 +248,10 @@ def test_malformed_envelopes_are_structured_errors(backend, raw, mutation):
     with pytest.raises(MooError) as error:
         backend.call("tasks.addTags", mutation=mutation)
     assert_error(error, "invalid_response", 7)
-    assert error.value.details == {"write_may_have_applied": mutation}
+    assert error.value.message == (
+        UNCERTAIN_WRITE_MESSAGE if mutation else "RTM returned an invalid response."
+    )
+    assert error.value.details is None
     backend.opener.open.assert_called_once()
 
 
@@ -242,17 +261,24 @@ def test_oversized_response_is_rejected(backend, mutation):
     with pytest.raises(MooError) as error:
         backend.call("tasks.getList", mutation=mutation)
     assert_error(error, "response_too_large", 7)
-    assert error.value.details == {"write_may_have_applied": mutation}
+    assert error.value.message == (
+        UNCERTAIN_WRITE_MESSAGE if mutation else "RTM response exceeded 8 MB."
+    )
+    assert error.value.details is None
     backend.opener.open.assert_called_once()
 
 
 @pytest.mark.parametrize("err", [None, [], "bad", 5])
-def test_malformed_api_errors_are_structured_errors(backend, err):
+@pytest.mark.parametrize("mutation", [False, True])
+def test_malformed_api_errors_are_structured_errors(backend, err, mutation):
     respond(backend, {"rsp": {"stat": "fail", "err": err}})
     with pytest.raises(MooError) as error:
-        backend.call("tasks.addTags", mutation=True)
+        backend.call("tasks.addTags", mutation=mutation)
     assert_error(error, "invalid_response", 7)
-    assert error.value.details == {"write_may_have_applied": True}
+    assert error.value.message == (
+        UNCERTAIN_WRITE_MESSAGE if mutation else "RTM returned an invalid error."
+    )
+    assert error.value.details is None
     backend.opener.open.assert_called_once()
 
 
@@ -305,8 +331,55 @@ def test_operation_deadline_reports_prior_write_and_does_not_retry(
     with pytest.raises(MooError) as error:
         backend.run(operation_mock)
     assert_error(error, "deadline_exceeded", 6)
-    assert error.value.details == {"write_may_have_applied": write_attempted}
+    assert error.value.message == (
+        UNCERTAIN_WRITE_MESSAGE
+        if write_attempted
+        else "Operation deadline exceeded; no retry performed."
+    )
+    assert error.value.details is None
+    assert backend.write_attempted is write_attempted
     operation_mock.assert_called_once_with()
+
+
+@pytest.mark.parametrize("write_attempted", [False, True])
+@pytest.mark.parametrize("failure", [KeyError, TypeError, AttributeError, ValueError])
+def test_operation_shape_failure_reports_prior_write(backend, write_attempted, failure):
+    def operation():
+        backend.write_attempted = write_attempted
+        raise failure
+
+    operation_mock = Mock(side_effect=operation)
+    with pytest.raises(MooError) as error:
+        backend.run(operation_mock)
+    assert_error(error, "invalid_response", 7)
+    assert error.value.message == (
+        UNCERTAIN_WRITE_MESSAGE
+        if write_attempted
+        else "RTM returned an unexpected response shape."
+    )
+    assert error.value.details is None
+    assert backend.write_attempted is write_attempted
+    operation_mock.assert_called_once_with()
+
+
+@pytest.mark.parametrize("mutation", ["note", "add_tags", "move"])
+def test_missing_mutation_result_reports_uncertain_write(backend, mutation):
+    backend._prepare = Mock(return_value={"timeline": "timeline", "list_id": "10"})
+    backend._list = Mock()
+    respond(backend, {"rsp": {"stat": "ok"}})
+    ref = TaskRef("10", "20", "30")
+    operations = {
+        "note": lambda: backend.add_note(ref, "Title", "Text"),
+        "add_tags": lambda: backend.change_tags(ref, ["milk"], False),
+        "move": lambda: backend.move(ref, "11"),
+    }
+    with pytest.raises(MooError) as error:
+        operations[mutation]()
+    assert_error(error, "invalid_response", 7)
+    assert error.value.message == UNCERTAIN_WRITE_MESSAGE
+    assert error.value.details is None
+    assert backend.write_attempted is True
+    backend.opener.open.assert_called_once()
 
 
 @pytest.mark.parametrize("mutation", ["note", "add_tags", "remove_tags", "move"])

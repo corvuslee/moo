@@ -121,6 +121,20 @@ class RTMBackend:
         self.opener = build_opener(NoRedirect())
         self.write_attempted = False
 
+    def failure(
+        self,
+        code: str,
+        message: str,
+        exit_code: int,
+        details: dict[str, object] | None = None,
+    ) -> MooError:
+        if self.write_attempted:
+            message = (
+                "Could not confirm the operation. It may have succeeded. "
+                "Check the task's current state before retrying."
+            )
+        return MooError(code, message, exit_code, details)
+
     def call(
         self,
         method: str,
@@ -145,42 +159,36 @@ class RTMBackend:
             with self.opener.open(request, timeout=timeout) as response:
                 raw = response.read(8_000_001)
             if len(raw) > 8_000_000:
-                raise MooError(
-                    "response_too_large",
-                    "RTM response exceeded 8 MB.",
-                    7,
-                    {"write_may_have_applied": mutation},
+                raise self.failure(
+                    "response_too_large", "RTM response exceeded 8 MB.", 7
                 )
             body = json.loads(raw)["rsp"]
             if not isinstance(body, dict) or body.get("stat") not in {"ok", "fail"}:
                 raise ValueError
         except HTTPError as error:
             code = "rate_limited" if error.code == 429 else "upstream_error"
-            raise MooError(
+            raise self.failure(
                 code, "RTM HTTP request failed.", 7, {"http_status": error.code}
             ) from None
         except (URLError, OSError, TimeoutError):
-            raise MooError(
+            raise self.failure(
                 "transport_error",
                 "RTM request failed or timed out; no retry performed.",
                 6,
-                {"write_may_have_applied": mutation},
             ) from None
         except (ValueError, KeyError, TypeError):
-            raise MooError(
+            raise self.failure(
                 "invalid_response",
                 "RTM returned an invalid response.",
                 7,
-                {"write_may_have_applied": mutation},
             ) from None
         if body["stat"] == "fail":
             error_data = body.get("err")
             if not isinstance(error_data, dict):
-                raise MooError(
+                raise self.failure(
                     "invalid_response",
                     "RTM returned an invalid error.",
                     7,
-                    {"write_may_have_applied": mutation},
                 )
             api_code = str(error_data.get("code", ""))
             if api_code == "105":
@@ -217,19 +225,23 @@ class RTMBackend:
         try:
             with deadline(self._timeout):
                 return operation()
+        except MooError as error:
+            if error.code == "invalid_response" and self.write_attempted:
+                raise self.failure(
+                    error.code, error.message, error.exit_code, error.details
+                ) from None
+            raise
         except TimeoutError:
-            raise MooError(
+            raise self.failure(
                 "deadline_exceeded",
                 "Operation deadline exceeded; no retry performed.",
                 6,
-                {"write_may_have_applied": self.write_attempted},
             ) from None
         except (KeyError, TypeError, AttributeError, ValueError):
-            raise MooError(
+            raise self.failure(
                 "invalid_response",
                 "RTM returned an unexpected response shape.",
                 7,
-                {"write_may_have_applied": self.write_attempted},
             ) from None
 
     def auth_url(self) -> str:
