@@ -37,6 +37,9 @@ Remember The Milk.
 
 ## Usage
 
+Use `moo --help-all` for the complete command reference, or `moo <subcommand> --help`
+for a subcommand's commands and arguments.
+
 ```sh
 # Show lists and their IDs
 moo lists list

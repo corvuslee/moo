@@ -190,6 +190,119 @@ def test_help_and_version_remain_plain_text(option, capsys):
         assert "A command-line interface for Remember The Milk." in captured.out
 
 
+HELP_COMMANDS = [
+    ([], "Remember The Milk"),
+    (["auth"], "--no-browser"),
+    (["auth", "status"], "without prompting"),
+    (["auth", "logout"], "saved token"),
+    (["lists"], "Discover"),
+    (["lists", "list"], "string IDs"),
+    (["tasks"], "without prompting"),
+    (["tasks", "list"], "--include-completed"),
+    (["tasks", "show"], "LIST:SERIES:TASK"),
+    (["tasks", "notes"], "Manage task notes"),
+    (["tasks", "notes", "add"], "--title"),
+    (["tasks", "tags"], "preserving unrelated tags"),
+    (["tasks", "tags", "add"], "--tag"),
+    (["tasks", "tags", "remove"], "--tag"),
+    (["tasks", "move"], "--to-list-id"),
+]
+
+
+@pytest.mark.parametrize(("arguments", "expected"), HELP_COMMANDS)
+def test_command_help_is_offline(arguments, expected, capsys, monkeypatch):
+    def fail(*args, **kwargs):
+        pytest.fail("Help must not load credentials, construct a backend or prompt")
+
+    monkeypatch.setattr("moo.cli.load_credentials", fail)
+    monkeypatch.setattr("builtins.input", fail)
+    with pytest.raises(SystemExit) as caught:
+        run([*arguments, "--help"], fail)
+    assert caught.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.startswith("usage: moo")
+    assert expected in captured.out
+    assert ("--help-all" in captured.out) == (not arguments)
+    assert captured.out.endswith("\n")
+
+
+def test_help_all_includes_every_command_once(capsys, monkeypatch):
+    def fail(*args, **kwargs):
+        pytest.fail("Help must not load credentials, construct a backend or prompt")
+
+    monkeypatch.setattr("moo.cli.load_credentials", fail)
+    monkeypatch.setattr("builtins.input", fail)
+    with pytest.raises(SystemExit) as caught:
+        run(["--help-all"], fail)
+    assert caught.value.code == 0
+    output = capsys.readouterr().out
+    for arguments, _ in HELP_COMMANDS[1:]:
+        assert output.count(f"=== moo {' '.join(arguments)} ===") == 1
+    assert output.count("usage: moo") == len(HELP_COMMANDS)
+    for text in [
+        "--no-browser",
+        "--force",
+        "--list-id",
+        "--include-completed",
+        "--title",
+        "--text",
+        "--tag",
+        "--to-list-id",
+        "LIST:SERIES:TASK",
+        "JSON",
+        "never retry automatically",
+        "inspect current state",
+    ]:
+        assert text in " ".join(output.split())
+
+
+@pytest.mark.parametrize("arguments", [["tasks"], ["tasks", "tags", "remove"]])
+def test_help_all_is_rejected_on_subcommands(arguments, capsys):
+    def fail(args):
+        pytest.fail("Backend must not be constructed")
+
+    assert run([*arguments, "--help-all"], fail) == 2
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out)["error"]["code"] == "invalid_arguments"
+
+
+@pytest.mark.parametrize("group", ["auth", "lists", "tasks"])
+@pytest.mark.parametrize("option", ["-h", "--help"])
+def test_group_help_includes_all_descendants(group, option, capsys):
+    with pytest.raises(SystemExit) as caught:
+        run([group, option])
+    assert caught.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    output = captured.out
+    descendants = [
+        arguments
+        for arguments, _ in HELP_COMMANDS
+        if len(arguments) > 1 and arguments[0] == group
+    ]
+    for arguments in descendants:
+        assert output.count(f"=== moo {' '.join(arguments)} ===") == 1
+    assert output.count("usage: moo") == len(descendants) + 1
+    assert "--help-all" not in output
+    if group == "tasks":
+        for option_name in ("--tag", "--title", "--text", "--to-list-id"):
+            assert option_name in output
+        assert "--no-browser" not in output
+
+
+@pytest.mark.parametrize(
+    "arguments", [[], ["tasks", "tags"], ["tasks", "tags", "remove"]]
+)
+def test_focused_help_does_not_expand_children(arguments, capsys):
+    with pytest.raises(SystemExit):
+        run([*arguments, "--help"])
+    output = capsys.readouterr().out
+    assert "--to-list-id" not in output
+    assert "===" not in output
+
+
 def test_unicode_is_escaped(capsys):
     backend = FakeBackend()
     backend.task = replace(backend.task, name="Café\nUpdate")

@@ -13,8 +13,17 @@ Authentication instructions and authorization URLs go to **stderr**. `moo auth`
 requires an interactive terminal and may wait for confirmation; task commands,
 `auth status`, and `auth logout` do not prompt.
 
-Help and version output are plain text, not JSON. An externally killed process is
-not guaranteed to produce a result.
+Help and version output are plain text, not JSON, and exit with code 0.
+Every command group and leaf command accepts `--help` (or `-h`). Top-level groups
+(`moo tasks --help`, `moo lists --help`, and `moo auth --help`) include help for all
+their descendants, so agents can discover arguments in one invocation. Root help
+and deeper command help remain focused on the requested command.
+`moo --help-all` prints help for the entire command tree, including arguments and
+options. The `--help-all` option is available only at the top level; subcommands
+accept `--help`, not `--help-all`. Help requires no credentials,
+backend construction, network access, or interactive input, even when required
+command arguments are omitted. An externally killed process is not guaranteed to
+produce a result.
 
 ## Result shape
 
