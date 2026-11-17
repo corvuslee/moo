@@ -317,7 +317,7 @@ def test_auth_network_phase_is_wall_clock_bounded(
 
 
 def test_real_auth_backend_does_not_reset_budget_between_phases(config: Path) -> None:
-    import time
+    from contextlib import contextmanager
 
     from moo.backends.rtm import RTMBackend
 
@@ -331,20 +331,32 @@ def test_real_auth_backend_does_not_reset_budget_between_phases(config: Path) ->
     backend.opener = opener
     opener.open.return_value.__enter__ = Mock(return_value=response)
     opener.open.return_value.__exit__ = Mock(return_value=False)
+    remaining = [0.0]
 
-    def open_request(*args, **kwargs):
-        time.sleep(0.04)
-        return opener.open.return_value
+    @contextmanager
+    def bounded(seconds):
+        previous = remaining[0]
+        remaining[0] = min(seconds, previous) if previous else seconds
+        try:
+            yield
+        finally:
+            remaining[0] = previous
 
-    backend.opener.open.side_effect = open_request
     with (
         patch("moo.auth.sys.stdin.isatty", return_value=True),
-        patch("moo.auth.OPERATION_TIMEOUT", 0.06),
+        patch("moo.auth.monotonic", side_effect=[0.0, 3.0, 1003.0, 1005.0]),
+        patch("moo.auth.deadline", side_effect=bounded),
+        patch("moo.backends.rtm.deadline", side_effect=bounded),
+        patch(
+            "moo.backends.rtm.signal.getitimer",
+            side_effect=lambda timer: (remaining[0], 0),
+        ),
         patch("builtins.input", return_value=""),
-        pytest.raises(MooError) as caught,
     ):
         authenticate(Credentials("key", "secret"), backend, no_browser=True)
-    assert caught.value.exit_code == 6
-    assert backend.opener.open.call_count == 2
-    assert response.read.call_count == 1
-    assert not config.exists()
+    assert [call.kwargs["timeout"] for call in opener.open.call_args_list] == [
+        10.0,
+        7.0,
+    ]
+    assert load_credentials().token == "new"
+    assert config.exists()

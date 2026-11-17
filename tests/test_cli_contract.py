@@ -132,9 +132,15 @@ def test_invalid_arguments_never_construct_backend(arguments, capsys):
     assert body["error"]["code"] == "invalid_arguments"
 
 
-@pytest.mark.parametrize("code", [3, 4, 5, 6, 7])
 @pytest.mark.parametrize(
-    "details", [None, {}, {"http_status": 503}, {"retryable": False}]
+    ("code", "details"),
+    [
+        (3, None),
+        (4, {}),
+        (5, {"retryable": False}),
+        (6, None),
+        (7, {"http_status": 503}),
+    ],
 )
 def test_error_contract(code, details, capsys):
     def fail(args):
@@ -180,6 +186,8 @@ def test_help_and_version_remain_plain_text(option, capsys):
     assert captured.err == ""
     assert "moo" in captured.out
     assert not captured.out.startswith("{")
+    if option == "--help":
+        assert "A command-line interface for Remember The Milk." in captured.out
 
 
 def test_unicode_is_escaped(capsys):

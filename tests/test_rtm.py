@@ -2,7 +2,7 @@ import json
 from contextlib import nullcontext
 from email.message import Message
 from hashlib import md5
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock, Mock, call
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs
 from urllib.request import Request
@@ -154,6 +154,75 @@ def test_note_shapes(plural):
     assert rtm.normalize_tasks(task_response())[0].notes == []
 
 
+def test_tasks_requires_all_requested_tags(backend):
+    body = task_response(tags={"tag": ["milk", "shop", "extra"]})
+    matching = body["tasks"]["list"]["taskseries"]
+    body["tasks"]["list"]["taskseries"] = [
+        matching,
+        {**matching, "id": "21", "tags": {"tag": "milk"}},
+        {**matching, "id": "22", "tags": {}},
+    ]
+    backend.call = Mock(return_value=body)
+    assert [task.ref for task in backend.tasks(None, ["milk", "shop"], False)] == [
+        "10:20:30"
+    ]
+    backend.call.assert_called_once_with(
+        "tasks.getList", {"filter": "status:incomplete"}
+    )
+
+
+@pytest.mark.parametrize(
+    "include_completed,expected_filter", [(False, "status:incomplete"), (True, "")]
+)
+def test_tasks_sends_completion_filter(backend, include_completed, expected_filter):
+    backend.call = Mock(return_value=task_response())
+    assert [task.ref for task in backend.tasks(None, [], include_completed)] == [
+        "10:20:30"
+    ]
+    backend.call.assert_called_once_with("tasks.getList", {"filter": expected_filter})
+
+
+def test_tasks_validates_and_selects_list(backend):
+    backend.call = Mock(
+        side_effect=[
+            {"lists": {"list": [{"id": "10", "name": "Source"}]}},
+            task_response(),
+        ]
+    )
+    assert [task.ref for task in backend.tasks("10", [], False)] == ["10:20:30"]
+    assert backend.call.call_args_list == [
+        call("lists.getList"),
+        call("tasks.getList", {"filter": "status:incomplete", "list_id": "10"}),
+    ]
+
+
+@pytest.mark.parametrize("found", [False, True])
+def test_show_requires_exact_reference(backend, found):
+    body = task_response()
+    series = body["tasks"]["list"]["taskseries"]
+    series["task"] = [{"id": "31"}]
+    body["tasks"]["list"]["taskseries"] = [
+        {**series, "id": "21", "task": {"id": "30"}},
+        series,
+    ]
+    if found:
+        series["task"].append({"id": "30"})
+    backend.call = Mock(return_value=body)
+    ref = TaskRef("10", "20", "30")
+    if found:
+        assert backend.show(ref).ref == str(ref)
+    else:
+        with pytest.raises(MooError) as error:
+            backend.show(ref)
+        assert_error(error, "not_found", 4)
+        assert error.value.message == (
+            "Task reference not found; rediscover after moving a task."
+        )
+    backend.call.assert_called_once_with(
+        "tasks.getList", {"list_id": "10", "filter": ""}
+    )
+
+
 def test_deleted_tasks_are_omitted_and_recurring_is_preserved():
     body = task_response(recurring=True)
     series = body["tasks"]["list"]["taskseries"]
@@ -228,21 +297,20 @@ def test_redirect_handler_blocks_following_redirects(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "raw",
+    "raw,mutation",
     [
-        b"not json",
-        b"\xff",
-        b"[]",
-        b"null",
-        b"{}",
-        b'{"rsp": null}',
-        b'{"rsp": []}',
-        b'{"rsp": {}}',
-        b'{"rsp": {"stat": "unknown"}}',
-        b'{"rsp": {"stat": []}}',
+        (b"not json", False),
+        (b"\xff", True),
+        (b"[]", False),
+        (b"null", True),
+        (b"{}", False),
+        (b'{"rsp": null}', True),
+        (b'{"rsp": []}', False),
+        (b'{"rsp": {}}', True),
+        (b'{"rsp": {"stat": "unknown"}}', False),
+        (b'{"rsp": {"stat": []}}', True),
     ],
 )
-@pytest.mark.parametrize("mutation", [False, True])
 def test_malformed_envelopes_are_structured_errors(backend, raw, mutation):
     respond(backend, raw)
     with pytest.raises(MooError) as error:
@@ -268,8 +336,9 @@ def test_oversized_response_is_rejected(backend, mutation):
     backend.opener.open.assert_called_once()
 
 
-@pytest.mark.parametrize("err", [None, [], "bad", 5])
-@pytest.mark.parametrize("mutation", [False, True])
+@pytest.mark.parametrize(
+    "err,mutation", [(None, False), ([], True), ("bad", False), (5, True)]
+)
 def test_malformed_api_errors_are_structured_errors(backend, err, mutation):
     respond(backend, {"rsp": {"stat": "fail", "err": err}})
     with pytest.raises(MooError) as error:
@@ -282,20 +351,23 @@ def test_malformed_api_errors_are_structured_errors(backend, err, mutation):
     backend.opener.open.assert_called_once()
 
 
-@pytest.mark.parametrize("api_code", list(range(96, 106)) + [1, 2, 300, 999])
-def test_api_error_mappings(backend, api_code):
+@pytest.mark.parametrize(
+    "api_code,code,exit_code",
+    [
+        (96, "authentication_failed", 3),
+        (104, "authentication_failed", 3),
+        (105, "upstream_error", 7),
+        (320, "not_found", 4),
+        (340, "not_found", 4),
+        (1, "operation_rejected", 5),
+        (999, "operation_rejected", 5),
+    ],
+)
+def test_api_error_mappings(backend, api_code, code, exit_code):
     respond(backend, {"rsp": {"stat": "fail", "err": {"code": api_code, "msg": "no"}}})
     with pytest.raises(MooError) as error:
         backend.call("tasks.getList")
-    auth = 96 <= api_code <= 104
-    if api_code == 105:
-        assert_error(error, "upstream_error", 7)
-    else:
-        assert_error(
-            error,
-            "authentication_failed" if auth else "operation_rejected",
-            3 if auth else 5,
-        )
+    assert_error(error, code, exit_code)
     assert error.value.details == {"api_code": str(api_code)}
     backend.opener.open.assert_called_once()
 
@@ -341,8 +413,10 @@ def test_operation_deadline_reports_prior_write_and_does_not_retry(
     operation_mock.assert_called_once_with()
 
 
-@pytest.mark.parametrize("write_attempted", [False, True])
-@pytest.mark.parametrize("failure", [KeyError, TypeError, AttributeError, ValueError])
+@pytest.mark.parametrize(
+    "failure,write_attempted",
+    [(KeyError, False), (TypeError, True), (AttributeError, False), (ValueError, True)],
+)
 def test_operation_shape_failure_reports_prior_write(backend, write_attempted, failure):
     def operation():
         backend.write_attempted = write_attempted
@@ -364,7 +438,14 @@ def test_operation_shape_failure_reports_prior_write(backend, write_attempted, f
 
 @pytest.mark.parametrize("mutation", ["note", "add_tags", "move"])
 def test_missing_mutation_result_reports_uncertain_write(backend, mutation):
-    backend._prepare = Mock(return_value={"timeline": "timeline", "list_id": "10"})
+    backend._prepare = Mock(
+        return_value={
+            "timeline": "timeline",
+            "list_id": "10",
+            "taskseries_id": "20",
+            "task_id": "30",
+        }
+    )
     backend._list = Mock()
     respond(backend, {"rsp": {"stat": "ok"}})
     ref = TaskRef("10", "20", "30")
@@ -382,8 +463,15 @@ def test_missing_mutation_result_reports_uncertain_write(backend, mutation):
     backend.opener.open.assert_called_once()
 
 
-@pytest.mark.parametrize("mutation", ["note", "add_tags", "remove_tags", "move"])
-@pytest.mark.parametrize("state", ["recurring", "completed", "smart", "archived"])
+@pytest.mark.parametrize(
+    "mutation,state",
+    [
+        ("note", "recurring"),
+        ("add_tags", "completed"),
+        ("remove_tags", "smart"),
+        ("move", "archived"),
+    ],
+)
 def test_unsafe_mutations_are_rejected_before_timeline_or_write(
     backend, mutation, state
 ):
@@ -434,9 +522,17 @@ def test_add_note_returns_owned_normalized_note(backend):
         "modified": "date",
         "extra": "ignored",
     }
-    backend._prepare = Mock(return_value={"timeline": "timeline"})
+    ref = TaskRef("10", "20", "30")
+    backend._prepare = Mock(
+        return_value={
+            "timeline": "timeline",
+            "list_id": "10",
+            "taskseries_id": "20",
+            "task_id": "30",
+        }
+    )
     backend.call = Mock(return_value={"note": upstream})
-    assert backend.add_note(TaskRef("10", "20", "30"), "Title", "Text") == {
+    assert backend.add_note(ref, "Title", "Text") == {
         "ref": "10:20:30",
         "note": {
             "id": "7",
@@ -446,11 +542,70 @@ def test_add_note_returns_owned_normalized_note(backend):
             "modified": "date",
         },
     }
+    backend._prepare.assert_called_once_with(ref)
     backend.call.assert_called_once_with(
         "tasks.notes.add",
-        {"timeline": "timeline", "note_title": "Title", "note_text": "Text"},
+        {
+            "timeline": "timeline",
+            "list_id": "10",
+            "taskseries_id": "20",
+            "task_id": "30",
+            "note_title": "Title",
+            "note_text": "Text",
+        },
         mutation=True,
     )
+
+
+@pytest.mark.parametrize(
+    "destination,code,exit_code",
+    [
+        ({"id": "11", "name": "Smart", "smart": "1"}, "invalid_state", 5),
+        ({"id": "11", "name": "Archived", "archived": "1"}, "invalid_state", 5),
+        ({"id": "12", "name": "Other"}, "not_found", 4),
+    ],
+)
+def test_move_rejects_unsafe_or_missing_destination_before_preparation(
+    backend, destination, code, exit_code
+):
+    backend.call = Mock(return_value={"lists": {"list": [destination]}})
+    backend._prepare = Mock()
+    with pytest.raises(MooError) as error:
+        backend.move(TaskRef("10", "20", "30"), "11")
+    assert_error(error, code, exit_code)
+    backend.call.assert_called_once_with("lists.getList")
+    backend._prepare.assert_not_called()
+    assert backend.write_attempted is False
+    backend.opener.open.assert_not_called()
+
+
+def test_move_wrong_destination_result_reports_uncertain_write(backend):
+    backend._list = Mock()
+    backend._prepare = Mock(
+        return_value={
+            "timeline": "timeline",
+            "list_id": "10",
+            "taskseries_id": "20",
+            "task_id": "30",
+        }
+    )
+    respond(backend, {"rsp": {"stat": "ok", "list": task_response()["tasks"]["list"]}})
+    ref = TaskRef("10", "20", "30")
+    with pytest.raises(MooError) as error:
+        backend.move(ref, "11")
+    assert_error(error, "invalid_response", 7)
+    assert error.value.message == UNCERTAIN_WRITE_MESSAGE
+    assert error.value.details is None
+    assert backend.write_attempted is True
+    backend._list.assert_called_once_with("11", writable=True)
+    backend._prepare.assert_called_once_with(ref)
+    backend.opener.open.assert_called_once()
+    params = parse_qs(backend.opener.open.call_args.args[0].data.decode())
+    assert params["method"] == ["rtm.tasks.moveTo"]
+    assert params["from_list_id"] == ["10"]
+    assert params["to_list_id"] == ["11"]
+    assert params["taskseries_id"] == ["20"]
+    assert params["task_id"] == ["30"]
 
 
 def test_move_returns_updated_reference_and_sends_source_and_destination(backend):

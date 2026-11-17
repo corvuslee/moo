@@ -32,7 +32,9 @@ def tag_value(value: str) -> str:
 
 
 def parser() -> Parser:
-    root = Parser(prog="moo", description="One-shot Remember The Milk CLI for agents")
+    root = Parser(
+        prog="moo", description="A command-line interface for Remember The Milk."
+    )
     root.add_argument("--version", action="version", version="moo 0.1.0")
     commands = root.add_subparsers(dest="command", required=True)
     auth = commands.add_parser("auth", help="Authorize once using your browser")
