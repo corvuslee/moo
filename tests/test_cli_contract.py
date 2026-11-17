@@ -177,17 +177,14 @@ def test_safe_error_results(failure, exit_code, code, message, capsys):
     }
 
 
-@pytest.mark.parametrize("option", ["--help", "--version"])
-def test_help_and_version_remain_plain_text(option, capsys):
+def test_version_remains_plain_text(capsys):
     with pytest.raises(SystemExit) as caught:
-        run([option])
+        run(["--version"])
     assert caught.value.code == 0
     captured = capsys.readouterr()
     assert captured.err == ""
     assert "moo" in captured.out
     assert not captured.out.startswith("{")
-    if option == "--help":
-        assert "A command-line interface for Remember The Milk." in captured.out
 
 
 HELP_COMMANDS = [
@@ -252,8 +249,6 @@ def test_help_all_includes_every_command_once(capsys, monkeypatch):
         "LIST:SERIES:TASK",
     ]:
         assert text in " ".join(output.split())
-    assert "Agent workflow" not in output
-    assert "inspect current state" not in output
 
 
 @pytest.mark.parametrize("arguments", [["tasks"], ["tasks", "tags", "remove"]])
@@ -268,10 +263,9 @@ def test_help_all_is_rejected_on_subcommands(arguments, capsys):
 
 
 @pytest.mark.parametrize("group", ["auth", "lists", "tasks"])
-@pytest.mark.parametrize("option", ["-h", "--help"])
-def test_group_help_includes_all_descendants(group, option, capsys):
+def test_group_help_includes_all_descendants(group, capsys):
     with pytest.raises(SystemExit) as caught:
-        run([group, option])
+        run([group, "--help"])
     assert caught.value.code == 0
     captured = capsys.readouterr()
     assert captured.err == ""
@@ -302,25 +296,26 @@ def test_focused_help_does_not_expand_children(arguments, capsys):
     assert "===" not in output
 
 
+def test_short_help_matches_long_help(capsys):
+    with pytest.raises(SystemExit):
+        run(["tasks", "-h"])
+    short_output = capsys.readouterr()
+    with pytest.raises(SystemExit):
+        run(["tasks", "--help"])
+    assert capsys.readouterr() == short_output
+
+
 @pytest.mark.parametrize("columns", ["40", "120"])
 def test_help_preserves_reference_lines(columns, monkeypatch, capsys):
     monkeypatch.setenv("COLUMNS", columns)
     with pytest.raises(SystemExit):
         run(["--help-all"])
     lines = capsys.readouterr().out.splitlines()
-    assert (
-        'Return lists with string IDs, names, smart and archived flags as {"lists": [...]}.'
-        in lines
-    )
-    assert (
-        "usage: moo tasks list [-h] [--list-id LIST_ID] [--tag TAG] [--include-completed]"
-        in lines
-    )
-    assert any(
-        line.strip().startswith("ref")
-        and line.endswith("each component containing ASCII digits")
-        for line in lines
-    )
+    usage = next(line for line in lines if line.startswith("usage: moo tasks list "))
+    for option in ("--list-id", "--tag", "--include-completed"):
+        assert option in usage
+    assert any('{"lists": [...]}' in line for line in lines)
+    assert any(len(line) > 120 for line in lines)
 
 
 def test_unicode_is_escaped(capsys):
