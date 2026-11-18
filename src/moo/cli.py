@@ -73,7 +73,7 @@ def parser() -> Parser:
         nargs=0,
         help="Show the complete command reference, then exit",
     )
-    root.add_argument("--version", action="version", version="moo 0.1.0")
+    root.add_argument("--version", action="version", version="moo 0.2.0")
     commands = root.add_subparsers(dest="command", required=True, title="commands")
 
     def command(parent, name, description, **kwargs):
@@ -104,7 +104,7 @@ def parser() -> Parser:
         "Authorize interactively using your browser, or manage authorization.",
         epilog=(
             "Requires a TTY, RTM_API_KEY and RTM_SHARED_SECRET (or saved application "
-            "credentials). Requests account-wide delete permission for list moves. "
+            "credentials). Requests account-wide write permission for notes and tags. "
             "Use auth status for a noninteractive access check."
         ),
     )
@@ -208,19 +208,6 @@ def parser() -> Parser:
             required=True,
             help="Tag to change; repeat for multiple tags; no whitespace or commas",
         )
-    move = command(
-        task_actions,
-        "move",
-        "Move a task; returns ref and previous_ref. Use the new ref afterward.",
-        epilog=f"{mutation_help} The destination must also be writable.",
-    )
-    move.add_argument("ref", help=reference_help)
-    move.add_argument(
-        "--to-list-id",
-        required=True,
-        type=identifier,
-        help="Destination list ID (ASCII digits)",
-    )
     return root
 
 
@@ -255,9 +242,7 @@ def dispatch(args: argparse.Namespace, backend: Backend) -> dict[str, object]:
         return {"task": asdict(backend.show(ref))}
     if args.action == "notes":
         return backend.add_note(ref, args.title, args.text)
-    if args.action == "tags":
-        return backend.change_tags(ref, args.tag, remove=args.tag_action == "remove")
-    return backend.move(ref, args.to_list_id)
+    return backend.change_tags(ref, args.tag, remove=args.tag_action == "remove")
 
 
 def emit(payload: dict[str, object]) -> None:

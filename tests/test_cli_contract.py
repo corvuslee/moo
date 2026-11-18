@@ -4,12 +4,14 @@ from dataclasses import asdict, replace
 import pytest
 
 from moo.cli import run
-from moo.contracts import MooError, Note, Task, TaskList, TaskRef
+from moo.contracts import MooError, Note, Task, TaskList
 
 
 class FakeBackend:
     def __init__(self):
-        self.task = Task("1:2:3", "1", "2", "3", "Implement feature", ["agent-ready"])
+        self.task = Task(
+            "1:2:3", "1", "2", "3", "Implement feature", ["ask-ai", "unrelated"]
+        )
 
     def lists(self):
         return [
@@ -18,6 +20,8 @@ class FakeBackend:
         ]
 
     def tasks(self, list_id, tags, include_completed):
+        if list_id is not None and list_id != self.task.list_id:
+            return []
         return [self.task] if set(tags).issubset(self.task.tags) else []
 
     def show(self, ref):
@@ -43,19 +47,6 @@ class FakeBackend:
         self.task.notes.append(Note("8", title, text))
         return {"ref": str(ref), "note": asdict(self.task.notes[-1])}
 
-    def move(self, ref, destination):
-        new_ref = TaskRef(destination, ref.series_id, ref.task_id)
-        self.task = Task(
-            str(new_ref),
-            destination,
-            ref.series_id,
-            ref.task_id,
-            self.task.name,
-            self.task.tags,
-            self.task.notes,
-        )
-        return {"ref": str(new_ref), "previous_ref": str(ref)}
-
     def check_token(self):
         return {"authorized": True}
 
@@ -77,36 +68,56 @@ def invoke(arguments, backend, capsys):
 
 def test_agent_workflow(capsys):
     backend = FakeBackend()
-    for command, fields in [
-        (["lists", "list"], {"lists"}),
-        (["tasks", "list", "--list-id", "1", "--tag", "agent-ready"], {"tasks"}),
-        (["tasks", "show", "1:2:3"], {"task"}),
-        (["tasks", "tags", "add", "1:2:3", "--tag", "in-progress"], {"task"}),
-        (["tasks", "tags", "remove", "1:2:3", "--tag", "agent-ready"], {"task"}),
-        (
-            [
-                "tasks",
-                "notes",
-                "add",
-                "1:2:3",
-                "--title",
-                "Progress",
-                "--text",
-                "Tests pass",
-            ],
-            {"ref", "note"},
-        ),
-        (["tasks", "tags", "add", "1:2:3", "--tag", "needs-review"], {"task"}),
-        (["tasks", "move", "1:2:3", "--to-list-id", "4"], {"ref", "previous_ref"}),
-    ]:
-        code, body = invoke(command, backend, capsys)
+
+    def command(*arguments):
+        code, body = invoke(list(arguments), backend, capsys)
         assert code == 0
-        assert set(body) == fields
-    code, body = invoke(["tasks", "list", "--tag", "agent-ready"], backend, capsys)
-    assert code == 0
-    assert body["tasks"] == []
-    code, body = invoke(["tasks", "show", "4:2:3"], backend, capsys)
-    assert body["task"]["notes"][0]["text"] == "Tests pass"
+        return body
+
+    discovered = command("tasks", "list", "--tag", "ask-ai")
+    assert set(discovered) == {"tasks"}
+    assert [task["ref"] for task in discovered["tasks"]] == ["1:2:3"]
+    ref = discovered["tasks"][0]["ref"]
+    before = command("tasks", "show", ref)
+    assert before == {"task": discovered["tasks"][0]}
+
+    added_note = command(
+        "tasks", "notes", "add", ref, "--title", "Progress", "--text", "Tests pass"
+    )
+    assert added_note == {
+        "ref": ref,
+        "note": asdict(Note("8", "Progress", "Tests pass")),
+    }
+    tagged = command("tasks", "tags", "add", ref, "--tag", "pending-review")
+    assert set(tagged) == {"task"}
+    assert set(tagged["task"]["tags"]) == {"ask-ai", "pending-review", "unrelated"}
+    untagged = command("tasks", "tags", "remove", ref, "--tag", "ask-ai")
+
+    after = command("tasks", "show", ref)
+    assert after == untagged
+    assert set(after) == {"task"}
+    assert after["task"]["ref"] == ref
+    assert after["task"]["list_id"] == before["task"]["list_id"] == "1"
+    assert after["task"]["notes"] == [added_note["note"]]
+    assert set(after["task"]["tags"]) == {"pending-review", "unrelated"}
+    assert command("tasks", "list", "--tag", "ask-ai") == {"tasks": []}
+    assert command("tasks", "list", "--tag", "pending-review") == {
+        "tasks": [after["task"]]
+    }
+
+
+def test_lists_and_task_list_filters(capsys):
+    backend = FakeBackend()
+    assert invoke(["lists", "list"], backend, capsys) == (
+        0,
+        {"lists": [asdict(task_list) for task_list in backend.lists()]},
+    )
+    assert invoke(
+        ["tasks", "list", "--list-id", "1", "--tag", "ask-ai"], backend, capsys
+    ) == (0, {"tasks": [asdict(backend.task)]})
+    assert invoke(
+        ["tasks", "list", "--list-id", "4", "--tag", "ask-ai"], backend, capsys
+    ) == (0, {"tasks": []})
 
 
 @pytest.mark.parametrize(
@@ -115,6 +126,7 @@ def test_agent_workflow(capsys):
         [],
         ["watch"],
         ["tasks", "create"],
+        ["tasks", "move", "1:2:3", "--to-list-id", "4"],
         ["tasks", "show", "bad"],
         ["tasks", "list", "--list-id", "not-an-id"],
         ["tasks", "list", "--tag", "two,tags"],
@@ -202,7 +214,6 @@ HELP_COMMANDS = [
     (["tasks", "tags"], "preserving unrelated tags"),
     (["tasks", "tags", "add"], "--tag"),
     (["tasks", "tags", "remove"], "--tag"),
-    (["tasks", "move"], "--to-list-id"),
 ]
 
 
@@ -245,7 +256,6 @@ def test_help_all_includes_every_command_once(capsys, monkeypatch):
         "--title",
         "--text",
         "--tag",
-        "--to-list-id",
         "LIST:SERIES:TASK",
     ]:
         assert text in " ".join(output.split())
@@ -280,7 +290,7 @@ def test_group_help_includes_all_descendants(group, capsys):
     assert output.count("usage: moo") == len(descendants) + 1
     assert "--help-all" not in output
     if group == "tasks":
-        for option_name in ("--tag", "--title", "--text", "--to-list-id"):
+        for option_name in ("--tag", "--title", "--text"):
             assert option_name in output
         assert "--no-browser" not in output
 
@@ -292,7 +302,6 @@ def test_focused_help_does_not_expand_children(arguments, capsys):
     with pytest.raises(SystemExit):
         run([*arguments, "--help"])
     output = capsys.readouterr().out
-    assert "--to-list-id" not in output
     assert "===" not in output
 
 
@@ -338,5 +347,5 @@ def test_status(capsys):
 def test_no_implicit_loop(capsys):
     backend = FakeBackend()
     assert invoke(["tasks", "list"], backend, capsys)[0] == 0
-    assert backend.task.tags == ["agent-ready"]
+    assert backend.task.tags == ["ask-ai", "unrelated"]
     assert backend.task.notes == []
