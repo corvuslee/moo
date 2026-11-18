@@ -31,16 +31,6 @@ Credentials are saved in `~/.config/moo/credentials.json` (or
 `moo auth logout` to remove the saved token. Logging out does not revoke access in
 Remember The Milk.
 
-### Upgrading to 0.2.0
-
-`moo tasks move` has been removed. New authorizations request account-wide
-`write` permission instead of `delete`. Existing `delete` tokens are not
-automatically downgraded. To reduce access, revoke the old authorization in
-Remember The Milk, then run `moo auth --force` to authorize again.
-
-If you use `RTM_AUTH_TOKEN`, replace it with the new token or unset it to use
-moo's newly saved token. An environment token overrides the saved token.
-
 ## Usage
 
 Use `moo --help-all` for the complete command reference, or `moo <subcommand> --help`

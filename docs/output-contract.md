@@ -81,13 +81,6 @@ through from RTM and may be null when omitted upstream. The example above shows 
 typical response, not fixed account values. Status failure returns an error, not
 `authorized: false`. Credentials and authorization tokens are not included in results.
 
-Starting in 0.2.0, `moo tasks move` is no longer available and new authorizations
-request account-wide `write` permission. Existing `delete` tokens are not
-automatically downgraded, and status may still report `delete`. To reduce access,
-revoke the old authorization in Remember The Milk and run `moo auth --force`.
-If you use `RTM_AUTH_TOKEN`, replace it with the new token or unset it to use the
-newly saved token.
-
 For logout, `token_removed` indicates whether a nonempty saved token was removed.
 Logout does not clear environment variables or revoke access in Remember The Milk.
 
