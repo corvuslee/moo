@@ -65,18 +65,16 @@ The following shapes describe the complete success object written to stdout.
 | `moo tasks notes add REF ...` | `{"ref": "LIST:SERIES:TASK", "note": Note}` |
 | `moo tasks tags add REF ...` | `{"task": Task}` containing the updated task |
 | `moo tasks tags remove REF ...` | `{"task": Task}` containing the updated task |
-| `moo tasks move REF --to-list-id ID` | `{"ref": "NEW_LIST:SERIES:TASK", "previous_ref": "LIST:SERIES:TASK"}` |
 | `moo auth` after new authorization | `{"authenticated": true, "saved": true}` |
 | `moo auth` with a valid saved or configured token | Same result as `auth status` |
-| `moo auth status` | `{"authorized": true, "permissions": "delete", "username": "example", "user_id": "123"}` |
+| `moo auth status` | `{"authorized": true, "permissions": "write", "username": "example", "user_id": "123"}` |
 | `moo auth logout` | `{"logged_out": true, "token_removed": true, "message": "..."}` |
 
 Empty list/task results are successful and use empty arrays. Task listings exclude
 completed tasks unless `--include-completed` is supplied. Repeated `--tag` filters
 require every tag, and combine with `--list-id` using AND.
 
-A move returns the new reference; use it for subsequent commands. Do not assume the
-old reference remains valid. Adding or removing tags preserves unrelated tags.
+Adding or removing tags preserves unrelated tags.
 
 Authentication status fields `permissions`, `username`, and `user_id` are passed
 through from RTM and may be null when omitted upstream. The example above shows a
@@ -177,9 +175,7 @@ retain their failure-specific messages. The message is guidance for recovery,
 not a stable parsing interface; continue to branch on `error.code`. A different
 message or absent details is not proof that no change occurred.
 
-If a move may have succeeded, rediscover the task in the destination list rather
-than relying on its previous reference. Commands do not provide a multi-command
-transaction, task lock, or atomic claim.
+Commands do not provide a multi-command transaction, task lock, or atomic claim.
 
 ## Single output format
 

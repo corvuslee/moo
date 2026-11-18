@@ -1,5 +1,5 @@
 import time
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -8,11 +8,11 @@ from moo.backends.rtm import RTMBackend
 from moo.contracts import MooError, TaskRef
 
 
-def test_auth_requests_delete_permission_for_list_moves():
+def test_auth_requests_write_permission():
     backend = RTMBackend("key", "secret", None)
     backend.call = Mock(return_value={"frob": "temporary"})
     query = parse_qs(urlsplit(backend.auth_url()).query)
-    assert query["perms"] == ["delete"]
+    assert query["perms"] == ["write"]
     assert query["frob"] == ["temporary"]
     assert "auth_token" not in query
 
@@ -51,31 +51,40 @@ def test_tag_mutations_use_additive_endpoints_and_owned_output(remove):
         "taskseries_id": "2",
         "task_id": "3",
     }
-    backend._prepare = Mock(return_value=prepared)
+    task_list = {
+        "id": "1",
+        "taskseries": {
+            "id": "2",
+            "name": "Task",
+            "tags": {"tag": ["other"]},
+            "task": {"id": "3"},
+        },
+    }
     backend.call = Mock(
-        return_value={
-            "list": {
-                "id": "1",
-                "taskseries": {
-                    "id": "2",
-                    "name": "Task",
-                    "tags": {"tag": ["other"]},
-                    "task": {"id": "3"},
-                },
-            }
-        }
+        side_effect=[
+            {"lists": {"list": [{"id": "1", "name": "Source"}]}},
+            {"tasks": {"list": task_list}},
+            {"timeline": "1"},
+            {"list": task_list},
+        ]
     )
     result = backend.change_tags(
         TaskRef("1", "2", "3"), ["agent-ready", "review"], remove
     )
     task = result["task"]
     assert isinstance(task, dict)
+    assert task["ref"] == "1:2:3"
     assert task["tags"] == ["other"]
-    backend.call.assert_called_once_with(
-        "tasks.removeTags" if remove else "tasks.addTags",
-        {**prepared, "tags": "agent-ready,review"},
-        mutation=True,
-    )
+    assert backend.call.call_args_list == [
+        call("lists.getList"),
+        call("tasks.getList", {"list_id": "1", "filter": ""}),
+        call("timelines.create"),
+        call(
+            "tasks.removeTags" if remove else "tasks.addTags",
+            {**prepared, "tags": "agent-ready,review"},
+            mutation=True,
+        ),
+    ]
 
 
 def test_requests_use_remaining_operation_budget(monkeypatch):

@@ -462,7 +462,7 @@ def test_operation_shape_failure_reports_prior_write(backend, write_attempted, f
     operation_mock.assert_called_once_with()
 
 
-@pytest.mark.parametrize("mutation", ["note", "add_tags", "move"])
+@pytest.mark.parametrize("mutation", ["note", "add_tags", "remove_tags"])
 def test_missing_mutation_result_reports_uncertain_write(backend, mutation):
     backend._prepare = Mock(
         return_value={
@@ -472,13 +472,12 @@ def test_missing_mutation_result_reports_uncertain_write(backend, mutation):
             "task_id": "30",
         }
     )
-    backend._list = Mock()
     respond(backend, {"rsp": {"stat": "ok"}})
     ref = TaskRef("10", "20", "30")
     operations = {
         "note": lambda: backend.add_note(ref, "Title", "Text"),
         "add_tags": lambda: backend.change_tags(ref, ["milk"], False),
-        "move": lambda: backend.move(ref, "11"),
+        "remove_tags": lambda: backend.change_tags(ref, ["milk"], True),
     }
     with pytest.raises(MooError) as error:
         operations[mutation]()
@@ -490,29 +489,32 @@ def test_missing_mutation_result_reports_uncertain_write(backend, mutation):
 
 
 @pytest.mark.parametrize(
-    "mutation,state",
+    "mutation,state,code,exit_code",
     [
-        ("note", "recurring"),
-        ("add_tags", "completed"),
-        ("remove_tags", "smart"),
-        ("move", "archived"),
+        ("note", "recurring", "invalid_state", 5),
+        ("add_tags", "completed", "invalid_state", 5),
+        ("remove_tags", "smart", "invalid_state", 5),
+        ("note", "archived", "invalid_state", 5),
+        ("add_tags", "missing_list", "not_found", 4),
+        ("remove_tags", "missing_task", "not_found", 4),
     ],
 )
 def test_unsafe_mutations_are_rejected_before_timeline_or_write(
-    backend, mutation, state
+    backend, mutation, state, code, exit_code
 ):
     lists = [
         {
-            "id": "10",
+            "id": "11" if state == "missing_list" else "10",
             "name": "Source",
             "smart": "1" if state == "smart" else "0",
             "archived": "1" if state == "archived" else "0",
         },
-        {"id": "11", "name": "Destination", "smart": "0", "archived": "0"},
     ]
     body = task_response(
         recurring=state == "recurring", completed="date" if state == "completed" else ""
     )
+    if state == "missing_task":
+        body["tasks"]["list"]["taskseries"]["task"]["id"] = "31"
 
     def call(method, params=None, **kwargs):
         assert not kwargs.get("mutation", False)
@@ -527,15 +529,15 @@ def test_unsafe_mutations_are_rejected_before_timeline_or_write(
         "note": lambda: backend.add_note(ref, "Title", "Text"),
         "add_tags": lambda: backend.change_tags(ref, ["milk"], False),
         "remove_tags": lambda: backend.change_tags(ref, ["milk"], True),
-        "move": lambda: backend.move(ref, "11"),
     }
     with pytest.raises(MooError) as error:
         operations[mutation]()
-    assert_error(error, "invalid_state", 5)
-    assert all(
-        call.args[0] in {"lists.getList", "tasks.getList"}
-        for call in backend.call.call_args_list
-    )
+    assert_error(error, code, exit_code)
+    expected_calls = ["lists.getList"]
+    if state in {"recurring", "completed", "missing_task"}:
+        expected_calls.append("tasks.getList")
+    assert [call.args[0] for call in backend.call.call_args_list] == expected_calls
+    assert backend.write_attempted is False
     backend.opener.open.assert_not_called()
 
 
@@ -583,92 +585,28 @@ def test_add_note_returns_owned_normalized_note(backend):
     )
 
 
-@pytest.mark.parametrize(
-    "destination,code,exit_code",
-    [
-        ({"id": "11", "name": "Smart", "smart": "1"}, "invalid_state", 5),
-        ({"id": "11", "name": "Archived", "archived": "1"}, "invalid_state", 5),
-        ({"id": "12", "name": "Other"}, "not_found", 4),
-    ],
-)
-def test_move_rejects_unsafe_or_missing_destination_before_preparation(
-    backend, destination, code, exit_code
-):
-    backend.call = Mock(return_value={"lists": {"list": [destination]}})
-    backend._prepare = Mock()
-    with pytest.raises(MooError) as error:
-        backend.move(TaskRef("10", "20", "30"), "11")
-    assert_error(error, code, exit_code)
-    backend.call.assert_called_once_with("lists.getList")
-    backend._prepare.assert_not_called()
-    assert backend.write_attempted is False
-    backend.opener.open.assert_not_called()
-
-
-def test_move_wrong_destination_result_reports_uncertain_write(backend):
-    backend._list = Mock()
-    backend._prepare = Mock(
-        return_value={
-            "timeline": "timeline",
-            "list_id": "10",
-            "taskseries_id": "20",
-            "task_id": "30",
-        }
-    )
-    respond(backend, {"rsp": {"stat": "ok", "list": task_response()["tasks"]["list"]}})
+def test_tag_mutation_returning_a_different_task_reports_uncertain_write(backend):
+    prepared = {
+        "timeline": "timeline",
+        "list_id": "10",
+        "taskseries_id": "20",
+        "task_id": "30",
+    }
+    backend._prepare = Mock(return_value=prepared)
+    task_list = task_response()["tasks"]["list"]
+    task_list["taskseries"]["task"]["id"] = "31"
+    respond(backend, {"rsp": {"stat": "ok", "list": task_list}})
     ref = TaskRef("10", "20", "30")
     with pytest.raises(MooError) as error:
-        backend.move(ref, "11")
+        backend.change_tags(ref, ["milk"], True)
     assert_error(error, "invalid_response", 7)
     assert error.value.message == UNCERTAIN_WRITE_MESSAGE
     assert error.value.details is None
     assert backend.write_attempted is True
-    backend._list.assert_called_once_with("11", writable=True)
     backend._prepare.assert_called_once_with(ref)
     backend.opener.open.assert_called_once()
     params = parse_qs(backend.opener.open.call_args.args[0].data.decode())
-    assert params["method"] == ["rtm.tasks.moveTo"]
-    assert params["from_list_id"] == ["10"]
-    assert params["to_list_id"] == ["11"]
-    assert params["taskseries_id"] == ["20"]
-    assert params["task_id"] == ["30"]
-
-
-def test_move_returns_updated_reference_and_sends_source_and_destination(backend):
-    def call(method, params=None, **kwargs):
-        if method == "lists.getList":
-            return {
-                "lists": {
-                    "list": [
-                        {"id": "10", "name": "Source"},
-                        {"id": "11", "name": "Destination"},
-                    ]
-                }
-            }
-        if method == "tasks.getList":
-            return task_response()
-        if method == "timelines.create":
-            return {"timeline": "timeline"}
-        assert method == "tasks.moveTo"
-        assert kwargs == {"mutation": True}
-        assert params == {
-            "timeline": "timeline",
-            "taskseries_id": "20",
-            "task_id": "30",
-            "from_list_id": "10",
-            "to_list_id": "11",
-        }
-        moved_list = task_response()["tasks"]["list"]
-        moved_list["id"] = "11"
-        moved_list["taskseries"]["id"] = "21"
-        moved_list["taskseries"]["task"]["id"] = "31"
-        return {"stat": "ok", "list": moved_list}
-
-    backend.call = Mock(side_effect=call)
-    assert backend.move(TaskRef("10", "20", "30"), "11") == {
-        "ref": "11:21:31",
-        "previous_ref": "10:20:30",
-    }
-    assert [call.args[0] for call in backend.call.call_args_list].count(
-        "tasks.moveTo"
-    ) == 1
+    assert params["method"] == ["rtm.tasks.removeTags"]
+    assert params["tags"] == ["milk"]
+    for key, value in prepared.items():
+        assert params[key] == [value]

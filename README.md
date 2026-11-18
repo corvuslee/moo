@@ -1,12 +1,7 @@
 # moo
 
 A command-line interface for Remember The Milk. Find tasks, read and add notes,
-manage tags, and move tasks between lists.
-
-> **Permissions:** RTM has three account-wide permission levels: `read`, `write`,
-> and `delete`. Moving tasks requires the `delete` level, so moo requests it during
-> setup; `write` is insufficient. This level includes read/write and deletion access,
-> although moo has no delete command.
+and manage tags.
 
 ## Installation
 
@@ -63,10 +58,6 @@ moo tasks notes add 123:456:789 --title 'Update' --text 'Waiting for feedback.'
 # Add or remove a tag
 moo tasks tags add 123:456:789 --tag waiting
 moo tasks tags remove 123:456:789 --tag waiting
-
-# Move a task to another list and inspect its updated reference
-moo tasks move 123:456:789 --to-list-id 321
-moo tasks show 321:456:789
 ```
 
 Commands return single-line JSON with a fixed 10-second operation deadline and no

@@ -3,7 +3,7 @@
 ## Scope and constraints
 
 moo is a command-line interface for Remember The Milk (RTM). Find tasks, read and
-add notes, manage tags, and move tasks between lists.
+add notes, and manage tags.
 
 Task commands must remain noninteractive. Only explicit `moo auth` may prompt.
 Do not add polling, workers, automatic task execution, or automatic request retries.
@@ -109,7 +109,7 @@ details)`; the CLI suppresses unexpected exception text.
 ## RTM transport and mutation gotchas
 
 - Keep the standard-library HTTPS adapter. The previously inspected `rtmilk`
-  synchronous transport lacked a configurable timeout and move coverage.
+  synchronous transport lacked a configurable timeout.
 - The fixed 10-second budget spans all requests in an operation, not each request.
   `deadline()` uses `SIGALRM`/`ITIMER_REAL`, so this is Linux/main-thread code, not a
   thread-safe or portable timeout helper. Nested deadlines preserve the shorter
@@ -127,22 +127,18 @@ details)`; the CLI suppresses unexpected exception text.
   `normalize_tasks()` handle these shapes, including tag/note variants, omit deleted
   tasks, and preserve recurrence. Extend normalization and malformed-response tests
   rather than returning raw upstream dictionaries.
-- `_prepare()` verifies a writable source list and exact task reference, rejects
+- `_prepare()` verifies a writable list and exact task reference, rejects
   recurring/completed tasks, then creates a timeline. Smart or archived lists are
-  not writable. Moves validate the destination before preparation; keep unsafe
-  operations from reaching timeline creation or mutation calls.
+  not writable. Keep unsafe operations from reaching timeline creation or mutation
+  calls.
 - Use additive `tasks.addTags`/`tasks.removeTags` endpoints to preserve unrelated
-  tags, not whole-tag replacement. A move sends `from_list_id` and `to_list_id`,
-  verifies the normalized destination result, and returns a new reference; callers
-  must not rely on the old reference afterward.
+  tags, not whole-tag replacement.
 - Mark task-changing calls with `mutation=True`. `write_attempted` is reset once per
   operation and tracks uncertainty across later failures. Transport, HTTP, timeout,
   oversized, or malformed results after an attempted write may mean it succeeded;
   preserve the recovery guidance to inspect current state before retrying. Do not
   add a separate uncertainty flag or retry automatically. These operations are not
   transactions, task locks, or atomic claims.
-- RTM requires account-wide `delete` permission for list moves. Authorization
-  deliberately requests it even though moo has no delete command.
 
 ## Credential safety
 
@@ -160,6 +156,12 @@ cancelled auth. Existing tokens are checked rather than silently replaced unless
 `--force` is supplied. Even `auth --no-browser` needs a TTY; use `auth status` for
 noninteractive checks. Logout removes only the saved token, preserving application
 credentials; it does not unset environment variables or revoke RTM access.
+
+As of 0.2.0, moo does not support list moves and new authorizations request
+account-wide `write` permission. Existing `delete` tokens are not automatically
+downgraded. To reduce access, users must revoke the old authorization in RTM and
+reauthorize with `moo auth --force`. Users of `RTM_AUTH_TOKEN` must replace it with
+the new token or unset it to use the newly saved token.
 
 ## Testing patterns
 

@@ -249,7 +249,7 @@ class RTMBackend:
         self.frob = str(
             self.run(lambda: self.call("auth.getFrob", authenticated=False))["frob"]
         )
-        params = {"api_key": self.api_key, "perms": "delete", "frob": self.frob}
+        params = {"api_key": self.api_key, "perms": "write", "frob": self.frob}
         params["api_sig"] = signature(self.shared_secret, params)
         return AUTH_URL + "?" + urlencode(params)
 
@@ -380,22 +380,5 @@ class RTMBackend:
             if task is None:
                 raise ValueError
             return {"task": asdict(task)}
-
-        return self.run(mutate)
-
-    def move(self, ref: TaskRef, destination: str) -> dict[str, object]:
-        def mutate():
-            self._list(destination, writable=True)
-            params = self._prepare(ref)
-            params.pop("list_id")
-            response = self.call(
-                "tasks.moveTo",
-                {**params, "from_list_id": ref.list_id, "to_list_id": destination},
-                mutation=True,
-            )
-            moved = normalize_tasks({"tasks": {"list": response["list"]}})
-            if len(moved) != 1 or moved[0].list_id != destination:
-                raise ValueError
-            return {"ref": moved[0].ref, "previous_ref": str(ref)}
 
         return self.run(mutate)
